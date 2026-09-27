@@ -1,0 +1,6 @@
+/Makefile
+/.polybuild.mk
+/obj/
+/llm-budget
+/compile_commands.json
+*.d

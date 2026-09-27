@@ -1,0 +1,9 @@
+[paths]
+output = "llm-budget"
+source = [".", "Polyweb", "Polyweb/Polynet", "SJSON/src"]
+include = [".", "SJSON/src"]
+artifact = "obj"
+
+[options]
+compilation-flags = "-Wall -std=c++23 -O2 -pthread"
+libraries = ["ssl", "crypto"]

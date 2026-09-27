@@ -1,0 +1,6 @@
+[submodule "Polyweb"]
+	path = Polyweb
+	url = https://github.com/BlueCannonBall/Polyweb.git
+[submodule "SJSON"]
+	path = SJSON
+	url = https://github.com/Sopur/SJSON.git
