@@ -310,7 +310,7 @@ namespace sqlite {
         Connection* conn;
 
     public:
-        Transaction(Connection& conn, TransactionType type):
+        Transaction(Connection& conn, TransactionType type = TRANSACTION_DEFAULT):
             conn(&conn) {
             switch (type) {
             default:
