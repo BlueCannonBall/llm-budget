@@ -160,15 +160,15 @@ user_id_t make_user(pn::StringView name, uint64_t five_hour_limit_nanodollars, u
         RETURNING id;
     )");
 
-    std::string new_key = generate_api_key();
+    std::string new_api_key = generate_api_key();
 
     stmt.bind(name, 1);
-    stmt.bind(hash_api_key(new_key), 2);
+    stmt.bind(hash_api_key(new_api_key), 2);
     stmt.bind(checked_nanodollars(five_hour_limit_nanodollars), 3);
     stmt.bind(checked_nanodollars(weekly_limit_nanodollars), 4);
 
     auto result = stmt.exec<sqlite::Int64>().at(0);
-    api_key = std::move(new_key);
+    api_key = std::move(new_api_key);
     return std::get<0>(result);
 }
 
@@ -185,24 +185,22 @@ User get_user(user_id_t id) {
 }
 
 std::optional<User> get_user_by_api_key(pn::StringView api_key) {
-    if (api_key.size() != 64 || !std::all_of(api_key.begin(), api_key.end(), [](unsigned char ch) {
-            return isxdigit(ch) != 0;
-        })) {
-        return std::nullopt;
-    }
-
     thread_local sqlite::Statement stmt(conn, R"(
         SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
         FROM users
         WHERE api_key_hash = ?;
     )");
 
+    if (api_key.size() != 64 || !std::all_of(api_key.begin(), api_key.end(), [](unsigned char ch) {
+            return isxdigit(ch) != 0;
+        })) {
+        return std::nullopt;
+    }
     stmt.bind(hash_api_key(api_key), 1);
 
-    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
-    if (rows.empty()) return std::nullopt;
-
-    return user_from_row(rows.front());
+    auto result = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (result.empty()) return std::nullopt;
+    return user_from_row(result.front());
 }
 
 std::optional<User> get_user_by_name(pn::StringView name) {
@@ -214,10 +212,9 @@ std::optional<User> get_user_by_name(pn::StringView name) {
 
     stmt.bind(name, 1);
 
-    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
-    if (rows.empty()) return std::nullopt;
-
-    return user_from_row(rows.front());
+    auto result = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (result.empty()) return std::nullopt;
+    return user_from_row(result.front());
 }
 
 std::vector<User> list_users() {
@@ -227,14 +224,11 @@ std::vector<User> list_users() {
         ORDER BY id;
     )");
 
-    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
-    std::vector<User> users;
-    users.reserve(rows.size());
-    for (const auto& row : rows) {
-        users.push_back(user_from_row(row));
+    std::vector<User> ret;
+    for (const auto& row : stmt.exec_generator<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>()) {
+        ret.push_back(user_from_row(row));
     }
-
-    return users;
+    return ret;
 }
 
 bool set_user_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars) {
@@ -254,7 +248,7 @@ bool set_user_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_
     return !stmt.exec<sqlite::Int64>().empty();
 }
 
-bool rotate_api_key(user_id_t id, std::string& new_key) {
+bool rotate_api_key(user_id_t id, std::string& api_key) {
     thread_local sqlite::Statement stmt(conn, R"(
         UPDATE users
         SET
@@ -263,90 +257,28 @@ bool rotate_api_key(user_id_t id, std::string& new_key) {
         RETURNING id;
     )");
 
-    std::string generated_key = generate_api_key();
+    std::string new_api_key = generate_api_key();
 
-    stmt.bind(hash_api_key(generated_key), 1);
+    stmt.bind(hash_api_key(new_api_key), 1);
     stmt.bind((sqlite::Int64) id, 2);
 
     if (stmt.exec<sqlite::Int64>().empty()) return false;
-
-    new_key = std::move(generated_key);
+    api_key = std::move(new_api_key);
     return true;
 }
 
-static sqlite::Int64 cost_in_window(user_id_t user_id, sqlite::Int64 window_started_at, sqlite::Int64 time_ms) {
-    thread_local sqlite::Statement stmt(conn, R"(
-        SELECT COALESCE(SUM(cost_nanodollars), 0)
-        FROM requests
-        WHERE user_id = ? AND started_at BETWEEN ? AND ?;
-    )");
-
-    stmt.bind((sqlite::Int64) user_id, 1);
-    stmt.bind(window_started_at, 2);
-    stmt.bind(time_ms, 3);
-    return std::get<0>(stmt.exec<sqlite::Int64>().at(0));
-}
-
 std::optional<request_id_t> begin_request(user_id_t user_id, std::chrono::system_clock::time_point time) {
-    sqlite::Int64 time_ms = to_unix_ms(time);
-
-    sqlite::Transaction transaction(conn, sqlite::TRANSACTION_IMMEDIATE);
-    thread_local sqlite::Statement user_stmt(conn, R"(
-        SELECT five_hour_limit_nanodollars, weekly_limit_nanodollars,
-               five_hour_window_started_at, weekly_window_started_at
-        FROM users
-        WHERE id = ?;
-    )");
-    user_stmt.bind((sqlite::Int64) user_id, 1);
-    auto user_rows = user_stmt.exec<sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
-    if (user_rows.empty()) return std::nullopt;
-
-    auto [five_hour_limit_nanodollars, weekly_limit_nanodollars, prev_five_hour_window_started_at, prev_weekly_window_started_at] = user_rows.front();
-    constexpr sqlite::Int64 five_hour_window_duration = 18'000'000;
-    constexpr sqlite::Int64 weekly_window_duration = 604'800'000;
-
-    sqlite::Int64 five_hour_window_started_at = time_ms;
-    if (prev_five_hour_window_started_at && *prev_five_hour_window_started_at <= time_ms &&
-        time_ms - *prev_five_hour_window_started_at < five_hour_window_duration) {
-        five_hour_window_started_at = *prev_five_hour_window_started_at;
-    }
-
-    sqlite::Int64 weekly_window_started_at = time_ms;
-    if (prev_weekly_window_started_at && *prev_weekly_window_started_at <= time_ms &&
-        time_ms - *prev_weekly_window_started_at < weekly_window_duration) {
-        weekly_window_started_at = *prev_weekly_window_started_at;
-    }
-
-    if (cost_in_window(user_id, five_hour_window_started_at, time_ms) >= five_hour_limit_nanodollars ||
-        cost_in_window(user_id, weekly_window_started_at, time_ms) >= weekly_limit_nanodollars) {
-        return std::nullopt;
-    }
-
-    if (prev_five_hour_window_started_at != five_hour_window_started_at ||
-        prev_weekly_window_started_at != weekly_window_started_at) {
-        thread_local sqlite::Statement windows_stmt(conn, R"(
-            UPDATE users
-            SET
-                five_hour_window_started_at = ?,
-                weekly_window_started_at = ?
-            WHERE id = ?;
-        )");
-        windows_stmt.bind(five_hour_window_started_at, 1);
-        windows_stmt.bind(weekly_window_started_at, 2);
-        windows_stmt.bind((sqlite::Int64) user_id, 3);
-        windows_stmt.exec_void();
-    }
-
-    thread_local sqlite::Statement request_stmt(conn, R"(
+    thread_local sqlite::Statement stmt(conn, R"(
         INSERT INTO requests (user_id, started_at, state)
-        VALUES (?, ?, 'in_flight')
+        SELECT id, ?, 'in_flight' FROM users WHERE id = ?
         RETURNING id;
     )");
-    request_stmt.bind((sqlite::Int64) user_id, 1);
-    request_stmt.bind(time_ms, 2);
-    auto result = request_stmt.exec<sqlite::Int64>().at(0);
-    transaction.commit();
-    return std::get<0>(result);
+    stmt.bind((sqlite::Int64) to_unix_ms(time), 1);
+    stmt.bind((sqlite::Int64) user_id, 2);
+
+    auto result = stmt.exec<sqlite::Int64>();
+    if (result.empty()) return std::nullopt;
+    return std::get<0>(result.front());
 }
 
 void update_request(request_id_t id, uint64_t cost_nanodollars) {

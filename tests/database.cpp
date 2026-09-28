@@ -157,54 +157,10 @@ int main() {
     end_request(unknown_request, REQUEST_STATE_UNKNOWN, std::nullopt);
     check_request(unknown_request, "unknown", std::nullopt);
 
-    using namespace std::chrono;
-    auto base = system_clock::time_point {milliseconds {1'000'000'000'000}};
     std::string limit_key;
-    db.exec("CREATE TABLE window_updates (user_id INTEGER)");
-    db.exec(R"(
-        CREATE TRIGGER count_window_updates AFTER UPDATE OF five_hour_window_started_at, weekly_window_started_at ON users
-        BEGIN
-            INSERT INTO window_updates VALUES (NEW.id);
-        END;
-    )");
-    sqlite::Statement window_update_count(db, "SELECT COUNT(*) FROM window_updates WHERE user_id = ?");
-    auto count_window_updates = [&](user_id_t id) {
-        window_update_count.bind((sqlite::Int64) id, 1);
-        return std::get<0>(window_update_count.exec<sqlite::Int64>().at(0));
-    };
-
-    auto five_hour_user = make_user("five-hour", 10, 100, limit_key);
-    auto old_five_hour_request = begin_request(five_hour_user, base - hours {5}).value();
-    assert(count_window_updates(five_hour_user) == 1);
-    assert(get_user(five_hour_user).five_hour_window_started_at == base - hours {5});
-    assert(get_user(five_hour_user).weekly_window_started_at == base - hours {5});
-    end_request(old_five_hour_request, REQUEST_STATE_COMPLETED, 10);
-    assert(!begin_request(five_hour_user, base - milliseconds {1}));
-    assert(get_user(five_hour_user).five_hour_window_started_at == base - hours {5});
-    auto new_five_hour_request = begin_request(five_hour_user, base).value();
-    assert(count_window_updates(five_hour_user) == 2);
-    assert(get_user(five_hour_user).five_hour_window_started_at == base);
-    assert(get_user(five_hour_user).weekly_window_started_at == base - hours {5});
-    assert(begin_request(five_hour_user, base + milliseconds {1})); // A NULL cost does not count yet.
-    assert(count_window_updates(five_hour_user) == 2);
-    update_request(new_five_hour_request, 10);
-    assert(!begin_request(five_hour_user, base + milliseconds {2}));
-    assert(count_window_updates(five_hour_user) == 2);
-    assert(begin_request(five_hour_user, base + hours {5}));
-    assert(count_window_updates(five_hour_user) == 3);
-
-    auto weekly_user = make_user("weekly", 100, 10, limit_key);
-    auto old_weekly_request = begin_request(weekly_user, base - days {7}).value();
-    end_request(old_weekly_request, REQUEST_STATE_COMPLETED, 10);
-    assert(!begin_request(weekly_user, base - milliseconds {1}));
-    assert(get_user(weekly_user).five_hour_window_started_at == base - days {7});
-    auto new_weekly_request = begin_request(weekly_user, base).value();
-    assert(get_user(weekly_user).weekly_window_started_at == base);
-    end_request(new_weekly_request, REQUEST_STATE_COMPLETED, 10);
-    assert(!begin_request(weekly_user, base + milliseconds {1}));
-
     auto zero_limit_user = make_user("zero-limit", 0, 100, limit_key);
-    assert(!begin_request(zero_limit_user, base));
+    auto zero_limit_request = begin_request(zero_limit_user).value();
+    check_request(zero_limit_request, "in_flight", std::nullopt);
     assert(!get_user(zero_limit_user).five_hour_window_started_at);
-    assert(!begin_request(-1, base));
+    assert(!begin_request(-1));
 }

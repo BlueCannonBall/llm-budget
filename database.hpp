@@ -34,7 +34,7 @@ std::optional<User> get_user_by_api_key(pn::StringView api_key);
 std::optional<User> get_user_by_name(pn::StringView name);
 std::vector<User> list_users();
 bool set_user_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars);
-bool rotate_api_key(user_id_t id, std::string& new_key);
+bool rotate_api_key(user_id_t id, std::string& api_key);
 
 std::optional<request_id_t> begin_request(user_id_t user_id, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
 void update_request(request_id_t id, uint64_t cost_nanodollars);
