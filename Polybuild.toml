@@ -1,9 +1,18 @@
 [paths]
 output = "llm-budget"
 source = [".", "Polyweb", "Polyweb/Polynet", "SJSON/src"]
-include = [".", "SJSON/src"]
+include = [".", "SJSON/src", "spdlog/include"]
 artifact = "obj"
 
 [options]
-compilation-flags = "-Wall -std=c++23 -O2 -pthread"
-libraries = ["ssl", "crypto"]
+compilation-flags = "-Wall -std=c++23 -O2 -pthread -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE -DSPDLOG_COMPILED_LIB"
+libraries = ["ssl", "crypto", "sqlite3"]
+static-libraries = ["spdlog/build/libspdlog.a"]
+preludes = [
+    """ \
+        cd spdlog && \
+        cmake . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && \
+        "$(MAKE)" -C build \
+    """,
+]
+clean-preludes = ["rm -rf spdlog/build"]

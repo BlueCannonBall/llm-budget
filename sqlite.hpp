@@ -227,10 +227,14 @@ namespace sqlite {
             }
         }
 
-        void bind(std::nullopt_t, size_t index) {
+        void bind_null(size_t index) {
             if (int result = sqlite3_bind_null(raw_stmt, index); result != SQLITE_OK) {
                 throw Error(detail::errstr(result));
             }
+        }
+
+        void bind(std::nullopt_t, size_t index) {
+            bind_null(index);
         }
 
         void reset() {

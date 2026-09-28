@@ -5,25 +5,26 @@
 #include "util.hpp"
 #include <functional>
 #include <iomanip>
-#include <iostream>
+#include <spdlog/cfg/env.h>
+#include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
 
 void report_usage(const SJSON::JSValue& usage, std::string_view model, std::chrono::system_clock::time_point request_time) {
-    std::cout << "Got usage: " << usage.to_string(4) << std::endl;
+    SPDLOG_INFO("Got usage: {}", usage.to_string(4));
     if (!usage.is_object()) {
-        std::cout << "Cost estimate unavailable" << std::endl;
+        SPDLOG_WARN("Cost estimate unavailable");
         return;
     }
     auto amount = cost::calculate("deepseek", model, usage.object(), request_time);
     if (!amount) {
-        std::cout << "Cost estimate unavailable" << std::endl;
+        SPDLOG_WARN("Cost estimate unavailable");
         return;
     }
     std::ostringstream formatted;
     formatted << std::fixed << std::setprecision(9)
               << static_cast<double>(amount->nano_units) / 1'000'000'000;
-    std::cout << "Estimated cost (" << amount->currency << ", published prices): " << formatted.str() << std::endl;
+    SPDLOG_INFO("Estimated cost ({}, published prices): {}", amount->currency, formatted.str());
 }
 
 template <typename F>
@@ -59,8 +60,16 @@ pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::
 
 int main() {
     (void) pn::init();
+    spdlog::cfg::load_env_levels();
 
     pw::Server server;
+
+    server.error_cb = [](uint16_t status_code, pn::StringView what) {
+        if (what.empty()) {
+            return make_basic_resp(status_code);
+        }
+        return make_basic_resp(status_code, std::string(what));
+    };
 
     server.route("/chat/completions",
         pw::Route {
@@ -228,13 +237,13 @@ int main() {
         });
 
     if (pn::Status result = server.bind("127.0.0.1", 8787); !result) {
-        std::cerr << "Bind failed: " << result.error().message() << std::endl;
+        SPDLOG_ERROR("Bind failed: {}", result.error().message());
         return 1;
     }
 
-    std::cout << "Listening on http://127.0.0.1:8787" << std::endl;
+    SPDLOG_INFO("Listening on http://127.0.0.1:8787");
     if (pn::Status result = server.listen(); !result) {
-        std::cerr << "Listen failed: " << result.error().message() << std::endl;
+        SPDLOG_ERROR("Listen failed: {}", result.error().message());
         return 1;
     }
 }

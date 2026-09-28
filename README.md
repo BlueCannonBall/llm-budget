@@ -6,7 +6,8 @@ agents at it expecting a working API proxy.
 
 ## Build and run
 
-Requires Polybuild, a C++23 compiler, GNU Make, and OpenSSL development headers.
+Requires Polybuild, a C++23 compiler, GNU Make, CMake (to build spdlog),
+and OpenSSL and SQLite development headers.
 For a fresh checkout, first run `git submodule update --init --recursive`.
 Polybuild compiles Polyweb, its Polynet submodule, and SJSON from source.
 
