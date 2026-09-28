@@ -256,8 +256,8 @@ namespace sqlite {
                     break;
 
                 case SQLITE_DONE:
-                    reset();
                     reset_on_exit.stmt = nullptr;
+                    reset();
                     return ret;
 
                 default:
@@ -276,8 +276,8 @@ namespace sqlite {
                     break;
 
                 case SQLITE_DONE:
-                    reset();
                     reset_on_exit.stmt = nullptr;
+                    reset();
                     co_return;
 
                 default:
@@ -294,8 +294,8 @@ namespace sqlite {
                     break;
 
                 case SQLITE_DONE:
-                    reset();
                     reset_on_exit.stmt = nullptr;
+                    reset();
                     return;
 
                 default:
