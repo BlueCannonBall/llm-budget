@@ -2,6 +2,7 @@
 #include "Polyweb/sse.hpp"
 #include "SJSON/src/sjson.hpp"
 #include "cost.hpp"
+#include "database.hpp"
 #include "util.hpp"
 #include <functional>
 #include <iomanip>
@@ -58,9 +59,10 @@ pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::
     return resp;
 }
 
-int main() {
+int main(int argc, char** argv) {
     (void) pn::init();
     spdlog::cfg::load_env_levels();
+    init();
 
     pw::Server server;
 

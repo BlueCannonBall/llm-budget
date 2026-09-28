@@ -1,5 +1,7 @@
 #include "database.hpp"
 #include "sqlite.hpp"
+#include <algorithm>
+#include <ctype.h>
 #include <limits>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -111,6 +113,37 @@ static pn::StringView request_state_to_string(RequestState state) {
     }
 }
 
+static std::string generate_api_key() {
+    unsigned char buf[32];
+    if (RAND_bytes(buf, sizeof buf) != 1) {
+        throw std::runtime_error("RAND_bytes failed");
+    }
+
+    return bytes_to_hex(buf, sizeof buf);
+}
+
+static std::string hash_api_key(pn::StringView api_key) {
+    auto buf = hex_to_bytes(api_key);
+
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(buf.data(), buf.size(), digest);
+
+    return bytes_to_hex(digest, sizeof digest);
+}
+
+using UserRow = sqlite::Row<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>;
+
+static User user_from_row(const UserRow& row) {
+    return User {
+        .id = (user_id_t) std::get<0>(row),
+        .name = std::get<1>(row),
+        .five_hour_limit_nanodollars = (uint64_t) std::get<2>(row),
+        .weekly_limit_nanodollars = (uint64_t) std::get<3>(row),
+        .five_hour_window_started_at = from_unix_ms(std::get<4>(row)),
+        .weekly_window_started_at = from_unix_ms(std::get<5>(row)),
+    };
+}
+
 user_id_t make_user(pn::StringView name, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars, std::string& api_key) {
     thread_local sqlite::Statement stmt(conn, R"(
         INSERT INTO users (
@@ -127,21 +160,15 @@ user_id_t make_user(pn::StringView name, uint64_t five_hour_limit_nanodollars, u
         RETURNING id;
     )");
 
-    unsigned char buf[32];
-    if (RAND_bytes(buf, sizeof buf) != 1) {
-        throw std::runtime_error("RAND_bytes failed");
-    }
-
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(buf, sizeof buf, digest);
+    std::string new_key = generate_api_key();
 
     stmt.bind(name, 1);
-    stmt.bind(bytes_to_hex(digest, sizeof digest), 2);
+    stmt.bind(hash_api_key(new_key), 2);
     stmt.bind(checked_nanodollars(five_hour_limit_nanodollars), 3);
     stmt.bind(checked_nanodollars(weekly_limit_nanodollars), 4);
 
     auto result = stmt.exec<sqlite::Int64>().at(0);
-    api_key = bytes_to_hex(buf, sizeof buf);
+    api_key = std::move(new_key);
     return std::get<0>(result);
 }
 
@@ -155,39 +182,82 @@ User get_user(user_id_t id) {
     stmt.bind((sqlite::Int64) id, 1);
 
     auto result = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>().at(0);
-    return User {
-        .id = (user_id_t) std::get<0>(result),
-        .name = std::get<1>(result),
-        .five_hour_limit_nanodollars = (uint64_t) std::get<2>(result),
-        .weekly_limit_nanodollars = (uint64_t) std::get<3>(result),
-        .five_hour_window_started_at = from_unix_ms(std::get<4>(result)),
-        .weekly_window_started_at = from_unix_ms(std::get<5>(result)),
-    };
+    return user_from_row(result);
 }
 
-User get_user(pn::StringView api_key) {
+std::optional<User> get_user(pn::StringView api_key) {
+    if (api_key.size() != 64 || !std::all_of(api_key.begin(), api_key.end(), [](unsigned char ch) {
+            return isxdigit(ch) != 0;
+        })) {
+        return std::nullopt;
+    }
+
     thread_local sqlite::Statement stmt(conn, R"(
         SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
         FROM users
         WHERE api_key_hash = ?;
     )");
 
-    auto buf = hex_to_bytes(api_key);
+    stmt.bind(hash_api_key(api_key), 1);
 
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(buf.data(), buf.size(), digest);
+    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (rows.empty()) return std::nullopt;
 
-    stmt.bind(bytes_to_hex(digest, sizeof digest), 1);
+    return user_from_row(rows.front());
+}
 
-    auto result = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>().at(0);
-    return User {
-        .id = (user_id_t) std::get<0>(result),
-        .name = std::get<1>(result),
-        .five_hour_limit_nanodollars = (uint64_t) std::get<2>(result),
-        .weekly_limit_nanodollars = (uint64_t) std::get<3>(result),
-        .five_hour_window_started_at = from_unix_ms(std::get<4>(result)),
-        .weekly_window_started_at = from_unix_ms(std::get<5>(result)),
-    };
+std::vector<User> list_users() {
+    thread_local sqlite::Statement stmt(conn, R"(
+        SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
+        FROM users
+        ORDER BY id;
+    )");
+
+    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    std::vector<User> users;
+    users.reserve(rows.size());
+    for (const auto& row : rows) {
+        users.push_back(user_from_row(row));
+    }
+
+    return users;
+}
+
+bool set_user_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars) {
+    thread_local sqlite::Statement stmt(conn, R"(
+        UPDATE users
+        SET
+            five_hour_limit_nanodollars = ?,
+            weekly_limit_nanodollars = ?
+        WHERE id = ?
+        RETURNING id;
+    )");
+
+    stmt.bind(checked_nanodollars(five_hour_limit_nanodollars), 1);
+    stmt.bind(checked_nanodollars(weekly_limit_nanodollars), 2);
+    stmt.bind((sqlite::Int64) id, 3);
+
+    return !stmt.exec<sqlite::Int64>().empty();
+}
+
+bool rotate_api_key(user_id_t id, std::string& new_key) {
+    thread_local sqlite::Statement stmt(conn, R"(
+        UPDATE users
+        SET
+            api_key_hash = ?
+        WHERE id = ?
+        RETURNING id;
+    )");
+
+    std::string generated_key = generate_api_key();
+
+    stmt.bind(hash_api_key(generated_key), 1);
+    stmt.bind((sqlite::Int64) id, 2);
+
+    if (stmt.exec<sqlite::Int64>().empty()) return false;
+
+    new_key = std::move(generated_key);
+    return true;
 }
 
 request_id_t begin_request(user_id_t user_id, std::chrono::system_clock::time_point time) {

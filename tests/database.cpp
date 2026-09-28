@@ -40,22 +40,50 @@ int main() {
 
     std::string key(64, '0');
     check_user(get_user(user_id_t {1}), false, false);
-    check_user(get_user(pn::StringView(key)), false, false);
+    check_user(get_user(pn::StringView(key)).value(), false, false);
     db.exec("UPDATE users SET five_hour_window_started_at = 0 WHERE id = 1");
     check_user(get_user(user_id_t {1}), true, false);
-    check_user(get_user(pn::StringView(key)), true, false);
+    check_user(get_user(pn::StringView(key)).value(), true, false);
     db.exec("UPDATE users SET weekly_window_started_at = 1234 WHERE id = 1");
     check_user(get_user(user_id_t {1}), true, true);
-    check_user(get_user(pn::StringView(key)), true, true);
+    check_user(get_user(pn::StringView(key)).value(), true, true);
     db.exec("UPDATE users SET five_hour_window_started_at = NULL WHERE id = 1");
     check_user(get_user(user_id_t {1}), false, true);
-    check_user(get_user(pn::StringView(key)), false, true);
+    check_user(get_user(pn::StringView(key)).value(), false, true);
+
+    assert(!get_user(pn::StringView("invalid")));
+    assert(!get_user(pn::StringView(std::string(64, 'z'))));
+    assert(!get_user(pn::StringView(std::string(64, 'f'))));
 
     std::string created_key;
     auto created_id = make_user("created", 300, 400, created_key);
     assert(created_key.size() == 64);
     assert(get_user(created_id).name == "created");
-    assert(get_user(pn::StringView(created_key)).id == created_id);
+    assert(get_user(pn::StringView(created_key))->id == created_id);
+
+    auto users = list_users();
+    assert(users.size() == 2);
+    assert(users[0].id == 1 && users[0].name == "test-user");
+    assert(users[1].id == created_id && users[1].name == "created");
+    assert(users[0].weekly_window_started_at == std::chrono::system_clock::time_point {std::chrono::milliseconds {1234}});
+
+    assert(set_user_limits(created_id, 500, 600));
+    assert(get_user(created_id).five_hour_limit_nanodollars == 500);
+    assert(get_user(pn::StringView(created_key))->weekly_limit_nanodollars == 600);
+    assert(!set_user_limits(-1, 1, 2));
+    assert(!rotate_api_key(-1, created_key));
+    assert(get_user(pn::StringView(created_key))->id == created_id);
+
+    std::string old_key = created_key;
+    assert(rotate_api_key(created_id, created_key));
+    assert(created_key.size() == 64 && created_key != old_key);
+    assert(!get_user(pn::StringView(old_key)));
+    assert(get_user(pn::StringView(created_key))->id == created_id);
+    old_key = created_key;
+    assert(rotate_api_key(created_id, created_key));
+    assert(created_key != old_key);
+    assert(!get_user(pn::StringView(old_key)));
+    assert(get_user(pn::StringView(created_key))->id == created_id);
 
     auto above_sqlite_max = (uint64_t) std::numeric_limits<sqlite::Int64>::max() + 1;
     bool rejected = false;
@@ -65,6 +93,14 @@ int main() {
         rejected = true;
     }
     assert(rejected);
+    rejected = false;
+    try {
+        set_user_limits(created_id, above_sqlite_max, 1);
+    } catch (const std::out_of_range&) {
+        rejected = true;
+    }
+    assert(rejected);
+    assert(get_user(created_id).five_hour_limit_nanodollars == 500);
     rejected = false;
     try {
         make_user("too-large", 1, above_sqlite_max, created_key);
