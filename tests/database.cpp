@@ -128,7 +128,7 @@ int main() {
         assert(actual_state == state && actual_cost == cost);
     };
 
-    auto request_id = begin_request(1).value();
+    auto request_id = begin_request(1);
     check_request(request_id, "in_flight", std::nullopt);
     update_request(request_id, 8);
     check_request(request_id, "in_flight", 8);
@@ -153,14 +153,20 @@ int main() {
     assert(rejected);
     check_request(request_id, "completed", 0);
 
-    auto unknown_request = begin_request(1).value();
+    auto unknown_request = begin_request(1);
     end_request(unknown_request, REQUEST_STATE_UNKNOWN, std::nullopt);
     check_request(unknown_request, "unknown", std::nullopt);
 
     std::string limit_key;
     auto zero_limit_user = make_user("zero-limit", 0, 100, limit_key);
-    auto zero_limit_request = begin_request(zero_limit_user).value();
+    auto zero_limit_request = begin_request(zero_limit_user);
     check_request(zero_limit_request, "in_flight", std::nullopt);
     assert(!get_user(zero_limit_user).five_hour_window_started_at);
-    assert(!begin_request(-1));
+    rejected = false;
+    try {
+        begin_request(-1);
+    } catch (const sqlite::Error&) {
+        rejected = true;
+    }
+    assert(rejected);
 }

@@ -36,6 +36,6 @@ std::vector<User> list_users();
 bool set_user_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars);
 bool rotate_api_key(user_id_t id, std::string& api_key);
 
-std::optional<request_id_t> begin_request(user_id_t user_id, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
+request_id_t begin_request(user_id_t user_id, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
 void update_request(request_id_t id, uint64_t cost_nanodollars);
 void end_request(request_id_t id, RequestState state, std::optional<uint64_t> cost_nanodollars = {}, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());

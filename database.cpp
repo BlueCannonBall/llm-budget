@@ -191,8 +191,8 @@ std::optional<User> get_user_by_api_key(pn::StringView api_key) {
         WHERE api_key_hash = ?;
     )");
 
-    if (api_key.size() != 64 || !std::all_of(api_key.begin(), api_key.end(), [](unsigned char ch) {
-            return isxdigit(ch) != 0;
+    if (api_key.size() != 64 || !std::all_of(api_key.begin(), api_key.end(), [](unsigned char ch) -> bool {
+            return isxdigit(ch);
         })) {
         return std::nullopt;
     }
@@ -267,18 +267,25 @@ bool rotate_api_key(user_id_t id, std::string& api_key) {
     return true;
 }
 
-std::optional<request_id_t> begin_request(user_id_t user_id, std::chrono::system_clock::time_point time) {
+request_id_t begin_request(user_id_t user_id, std::chrono::system_clock::time_point time) {
     thread_local sqlite::Statement stmt(conn, R"(
-        INSERT INTO requests (user_id, started_at, state)
-        SELECT id, ?, 'in_flight' FROM users WHERE id = ?
+        INSERT INTO requests (
+            user_id,
+            started_at,
+            state)
+        VALUES (
+            ?,
+            ?,
+            'in_flight'
+        )
         RETURNING id;
     )");
-    stmt.bind((sqlite::Int64) to_unix_ms(time), 1);
-    stmt.bind((sqlite::Int64) user_id, 2);
 
-    auto result = stmt.exec<sqlite::Int64>();
-    if (result.empty()) return std::nullopt;
-    return std::get<0>(result.front());
+    stmt.bind((sqlite::Int64) user_id, 1);
+    stmt.bind((sqlite::Int64) to_unix_ms(time), 2);
+
+    auto result = stmt.exec<sqlite::Int64>().at(0);
+    return std::get<0>(result);
 }
 
 void update_request(request_id_t id, uint64_t cost_nanodollars) {

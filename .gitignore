@@ -6,3 +6,4 @@
 *.d
 *.db
 *.db*
+config.json
