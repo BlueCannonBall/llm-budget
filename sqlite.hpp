@@ -2,6 +2,7 @@
 #define SQLITE_HPP_
 
 #include "Polyweb/Polynet/string.hpp"
+#include <generator>
 #include <optional>
 #include <sqlite3.h>
 #include <stdexcept>
@@ -230,7 +231,7 @@ namespace sqlite {
         }
 
         template <typename... Us>
-        Table<Us...> exec() {
+        [[nodiscard]] Table<Us...> exec() {
             Table<Us...> ret;
             for (;;) {
                 switch (int result = sqlite3_step(raw_stmt); result) {
@@ -248,6 +249,32 @@ namespace sqlite {
         done:
             reset();
             return ret;
+        }
+
+        template <typename... Us>
+        std::generator<Row<Us...>> exec_generator() {
+            struct ResetOnExit {
+                sqlite3_stmt* stmt;
+
+                ~ResetOnExit() {
+                    if (stmt) sqlite3_reset(stmt);
+                }
+            } reset_on_exit {raw_stmt};
+            for (;;) {
+                switch (int result = sqlite3_step(raw_stmt); result) {
+                case SQLITE_ROW:
+                    co_yield make_row<Us...>(std::make_index_sequence<sizeof...(Us)>());
+                    break;
+
+                case SQLITE_DONE:
+                    reset();
+                    reset_on_exit.stmt = nullptr;
+                    co_return;
+
+                default:
+                    throw Error(errstr(result));
+                }
+            }
         }
 
         void exec_void() {
