@@ -1,5 +1,6 @@
 #include "sqlite.hpp"
 #include <cassert>
+#include <limits>
 #include <utility>
 
 int main() {
@@ -60,4 +61,20 @@ int main() {
     assert(connection_is_empty);
     source.init(":memory:");
     source.exec("CREATE TABLE newly_opened (value INTEGER)");
+
+    sqlite::Statement text_query(source, "SELECT ?1, ?2");
+    std::string text_with_null("a\0b", 3);
+    text_query.bind(text_with_null, 1);
+    text_query.bind(pn::StringView(text_with_null), 2);
+    auto text_rows = text_query.exec<sqlite::Text, sqlite::Text>();
+    assert(text_rows.size() == 1);
+    assert(std::get<0>(text_rows[0]) == text_with_null);
+    assert(std::get<1>(text_rows[0]) == text_with_null);
+    bool length_rejected = false;
+    try {
+        (void) sqlite::detail::checked_size(static_cast<size_t>(std::numeric_limits<int>::max()) + 1);
+    } catch (const std::length_error&) {
+        length_rejected = true;
+    }
+    assert(length_rejected);
 }

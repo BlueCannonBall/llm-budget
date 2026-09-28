@@ -3,6 +3,7 @@
 
 #include "Polyweb/Polynet/string.hpp"
 #include <generator>
+#include <limits>
 #include <optional>
 #include <sqlite3.h>
 #include <stdexcept>
@@ -18,9 +19,18 @@ namespace sqlite {
     typedef sqlite3_int64 Int64;
     typedef std::string Text;
 
-    inline std::string errstr(int error) {
-        return sqlite3_errstr(error);
-    }
+    namespace detail {
+        inline std::string errstr(int error) {
+            return sqlite3_errstr(error);
+        }
+
+        inline int checked_size(size_t size) {
+            if (size > (size_t) std::numeric_limits<int>::max()) {
+                throw std::length_error("Size exceeds the maximum accepted by SQLite");
+            }
+            return size;
+        }
+    } // namespace detail
 
     using Error = std::runtime_error;
 
@@ -42,7 +52,7 @@ namespace sqlite {
             if (this != &conn) {
                 if (raw_conn) {
                     if (int result = sqlite3_close(raw_conn); result != SQLITE_OK) {
-                        throw Error(errstr(result));
+                        throw Error(detail::errstr(result));
                     }
                 }
                 raw_conn = std::exchange(conn.raw_conn, nullptr);
@@ -57,15 +67,14 @@ namespace sqlite {
         void init(pn::StringView filename, int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX) {
             if (raw_conn) {
                 if (int result = sqlite3_close(raw_conn); result != SQLITE_OK) {
-                    throw Error(errstr(result));
+                    throw Error(detail::errstr(result));
                 }
                 raw_conn = nullptr;
             }
 
             if (int result = sqlite3_open_v2(filename.c_str(), &raw_conn, flags, nullptr); result != SQLITE_OK) {
-                sqlite3_close(raw_conn);
-                raw_conn = nullptr;
-                throw Error(errstr(result));
+                sqlite3_close(std::exchange(raw_conn, nullptr));
+                throw Error(detail::errstr(result));
             }
         }
 
@@ -79,7 +88,7 @@ namespace sqlite {
 
         void exec(pn::StringView sql) {
             if (int result = sqlite3_exec(raw_conn, sql.c_str(), nullptr, nullptr, nullptr); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
@@ -156,9 +165,7 @@ namespace sqlite {
     public:
         Statement() = default;
         Statement(const Connection& conn, pn::StringView sql) {
-            if (int result = sqlite3_prepare_v2(conn.raw_conn, sql.c_str(), -1, &raw_stmt, nullptr); result != SQLITE_OK) {
-                throw Error(errstr(result));
-            }
+            init(conn, sql);
         }
         Statement(Statement&& stmt) {
             *this = std::move(stmt);
@@ -179,62 +186,62 @@ namespace sqlite {
         void init(const Connection& conn, pn::StringView sql) {
             sqlite3_finalize(raw_stmt);
 
-            if (int result = sqlite3_prepare_v2(conn.raw_conn, sql.c_str(), -1, &raw_stmt, nullptr); result != SQLITE_OK) {
-                throw Error(errstr(result));
+            if (int result = sqlite3_prepare_v2(conn.raw_conn, sql.c_str(), detail::checked_size(sql.size()), &raw_stmt, nullptr); result != SQLITE_OK) {
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(const Blob& value, size_t index) {
             if (int result = sqlite3_bind_blob(raw_stmt, index, value.data(), value.size(), SQLITE_TRANSIENT); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(Double value, size_t index) {
             if (int result = sqlite3_bind_double(raw_stmt, index, value); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(Int value, size_t index) {
             if (int result = sqlite3_bind_int(raw_stmt, index, value); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(Int64 value, size_t index) {
             if (int result = sqlite3_bind_int64(raw_stmt, index, value); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(const Text& value, size_t index) {
-            if (int result = sqlite3_bind_text(raw_stmt, index, value.c_str(), -1, SQLITE_TRANSIENT); result != SQLITE_OK) {
-                throw Error(errstr(result));
+            if (int result = sqlite3_bind_text(raw_stmt, index, value.c_str(), detail::checked_size(value.size()), SQLITE_TRANSIENT); result != SQLITE_OK) {
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(pn::StringView value, size_t index) {
-            if (int result = sqlite3_bind_text(raw_stmt, index, value.c_str(), -1, SQLITE_TRANSIENT); result != SQLITE_OK) {
-                throw Error(errstr(result));
+            if (int result = sqlite3_bind_text(raw_stmt, index, value.c_str(), detail::checked_size(value.size()), SQLITE_TRANSIENT); result != SQLITE_OK) {
+                throw Error(detail::errstr(result));
             }
         }
 
         void bind(std::nullopt_t, size_t index) {
             if (int result = sqlite3_bind_null(raw_stmt, index); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
         void reset() {
             if (int result = sqlite3_reset(raw_stmt); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
         void clear_bindings() {
             if (int result = sqlite3_clear_bindings(raw_stmt); result != SQLITE_OK) {
-                throw Error(errstr(result));
+                throw Error(detail::errstr(result));
             }
         }
 
@@ -254,7 +261,7 @@ namespace sqlite {
                     return ret;
 
                 default:
-                    throw Error(errstr(result));
+                    throw Error(detail::errstr(result));
                 }
             }
         }
@@ -274,7 +281,7 @@ namespace sqlite {
                     co_return;
 
                 default:
-                    throw Error(errstr(result));
+                    throw Error(detail::errstr(result));
                 }
             }
         }
@@ -292,7 +299,7 @@ namespace sqlite {
                     return;
 
                 default:
-                    throw Error(errstr(result));
+                    throw Error(detail::errstr(result));
                 }
             }
         }
