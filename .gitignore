@@ -4,3 +4,5 @@
 /llm-budget
 /compile_commands.json
 *.d
+*.db
+*.db*

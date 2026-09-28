@@ -10,23 +10,15 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
+#include <stdlib.h>
 #include <string>
 
-void report_usage(const SJSON::JSValue& usage, std::string_view model, std::chrono::system_clock::time_point request_time) {
-    SPDLOG_INFO("Got usage: {}", usage.to_string(4));
-    if (!usage.is_object()) {
-        SPDLOG_WARN("Cost estimate unavailable");
-        return;
+static std::string getenv_string(const std::string& var) {
+    char* ret = getenv(var.c_str());
+    if (!ret) {
+        throw std::runtime_error("Environment variable does not exist: " + var);
     }
-    auto amount = cost::calculate("deepseek", model, usage.object(), request_time);
-    if (!amount) {
-        SPDLOG_WARN("Cost estimate unavailable");
-        return;
-    }
-    std::ostringstream formatted;
-    formatted << std::fixed << std::setprecision(9)
-              << static_cast<double>(amount->nano_units) / 1'000'000'000;
-    SPDLOG_INFO("Estimated cost ({}, published prices): {}", amount->currency, formatted.str());
+    return ret;
 }
 
 template <typename F>
@@ -84,8 +76,19 @@ int main(int argc, char** argv) {
 
                 pw::Headers outbound_req_headers;
 
+                std::optional<User> user;
                 if (auto authorization_it = inbound_req.headers.find("Authorization"); authorization_it != inbound_req.headers.end()) {
-                    outbound_req_headers["Authorization"] = authorization_it->second;
+                    auto authorization_split = pw::string::split_and_trim(authorization_it->second, ' ');
+                    if (authorization_split.size() != 2 || !pw::string::iequals(authorization_split.front(), "Bearer")) {
+                        return make_basic_resp(401);
+                    }
+
+                    user = get_user_by_api_key(authorization_split.back());
+                    if (!user) {
+                        return make_basic_resp(401);
+                    }
+
+                    outbound_req_headers["Authorization"] = "Bearer " + getenv_string("LLM_BUDGET_API_KEY");
                 } else {
                     return make_basic_resp(401);
                 }
@@ -118,7 +121,7 @@ int main(int argc, char** argv) {
                 using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
                 auto channel = std::make_shared<Channel<Message>>(8000);
 
-                pw::threadpool.schedule([outbound_req_headers = std::move(outbound_req_headers), outbound_req_body = std::move(inbound_req.body), model = std::move(model), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                pw::threadpool.schedule([outbound_req_headers = std::move(outbound_req_headers), user = std::move(*user), outbound_req_body = std::move(inbound_req.body), model = std::move(model), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
                     bool sent_head = false;
 
                     auto send_basic_resp = [&sent_head](Channel<Message>& channel, uint16_t status_code, const std::string& what = {}) {
@@ -137,8 +140,17 @@ int main(int argc, char** argv) {
                         channel.send(EndMessage {});
                     };
 
+                    std::optional<request_id_t> request_id;
                     try {
-                        pw::SSEParser sse_parser([&model, now](pw::SSEEvent event) -> bool {
+                        request_id = begin_request(user.id, now);
+                        if (!request_id) {
+                            if (auto channel_locked = channel.lock()) {
+                                send_basic_resp(*channel_locked.get(), 429);
+                            }
+                            return;
+                        }
+
+                        pw::SSEParser sse_parser([&model, now, request_id = *request_id](pw::SSEEvent event) -> bool {
                             if (event.type != "message") return false;
                             if (event.data == "[DONE]") return true;
 
@@ -152,15 +164,51 @@ int main(int argc, char** argv) {
                             }
 
                             if (auto usage_it = message.find("usage"); usage_it != message.end() && usage_it->second.is_object()) {
-                                report_usage(usage_it->second, model, now);
+                                if (!usage_it->second.is_object()) {
+                                    SPDLOG_WARN("Cost estimate unavailable");
+                                    return true;
+                                }
+
+                                auto amount = cost::calculate("deepseek", model, usage_it->second.object(), now);
+                                if (!amount) {
+                                    SPDLOG_WARN("Cost estimate unavailable");
+                                    return true;
+                                }
+
+                                std::ostringstream formatted;
+                                formatted << std::fixed << std::setprecision(9)
+                                          << static_cast<double>(amount->nano_units) / 1'000'000'000;
+                                SPDLOG_INFO("Estimated cost ({}): {}", amount->currency, formatted.str());
+
+                                if (amount->currency == "USD") {
+                                    update_request(request_id, amount->nano_units);
+                                }
                             }
 
                             return true;
                         });
 
                         SJSON::Parse json_parser;
-                        json_parser.listen("usage", [&model, now](const SJSON::JSValue& value) {
-                            report_usage(value, model, now);
+                        json_parser.listen("usage", [&model, now, request_id = *request_id](const SJSON::JSValue& usage) {
+                            if (!usage.is_object()) {
+                                SPDLOG_WARN("Cost estimate unavailable");
+                                return;
+                            }
+
+                            auto amount = cost::calculate("deepseek", model, usage.object(), now);
+                            if (!amount) {
+                                SPDLOG_WARN("Cost estimate unavailable");
+                                return;
+                            }
+
+                            std::ostringstream formatted;
+                            formatted << std::fixed << std::setprecision(9)
+                                      << static_cast<double>(amount->nano_units) / 1'000'000'000;
+                            SPDLOG_INFO("Estimated cost ({}): {}", amount->currency, formatted.str());
+
+                            if (amount->currency == "USD") {
+                                update_request(request_id, amount->nano_units);
+                            }
                         });
 
                         pw::Response inbound_resp;
@@ -194,6 +242,7 @@ int main(int argc, char** argv) {
                             if (auto channel_locked = channel.lock()) {
                                 send_basic_resp(*channel_locked.get(), 502);
                             }
+                            end_request(*request_id, REQUEST_STATE_INTERRUPTED);
                             return;
                         }
 
@@ -203,10 +252,12 @@ int main(int argc, char** argv) {
                             }
                             channel_locked->send(EndMessage {});
                         }
+                        end_request(*request_id, REQUEST_STATE_COMPLETED);
                     } catch (...) {
                         if (auto channel_locked = channel.lock()) {
                             send_basic_resp(*channel_locked.get(), 500);
                         }
+                        if (request_id) end_request(*request_id, REQUEST_STATE_UNKNOWN);
                     }
                 },
                     true);
