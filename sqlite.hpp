@@ -233,26 +233,37 @@ namespace sqlite {
         Table<Us...> exec() {
             Table<Us...> ret;
             for (;;) {
-                if (int result = sqlite3_step(raw_stmt); result == SQLITE_ROW) {
+                switch (int result = sqlite3_step(raw_stmt); result) {
+                case SQLITE_ROW:
                     ret.push_back(make_row<Us...>(std::make_index_sequence<sizeof...(Us)>()));
-                } else if (result == SQLITE_DONE) {
                     break;
-                } else {
+
+                case SQLITE_DONE:
+                    goto done;
+
+                default:
                     throw Error(errstr(result));
                 }
             }
+        done:
             reset();
             return ret;
         }
 
         void exec_void() {
             for (;;) {
-                if (int result = sqlite3_step(raw_stmt); result == SQLITE_DONE) {
+                switch (int result = sqlite3_step(raw_stmt); result) {
+                case SQLITE_ROW:
                     break;
-                } else if (result != SQLITE_ROW) {
+
+                case SQLITE_DONE:
+                    goto done;
+
+                default:
                     throw Error(errstr(result));
                 }
             }
+        done:
             reset();
         }
     };
