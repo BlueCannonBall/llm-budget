@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
                     return make_basic_resp(401);
                 }
 
-                pw::Headers outbound_req_headers;
+                pw::Headers outbound_req_headers = {{"Content-Type", "application/json"}};
 
                 SJSON::JSObject req_body;
                 try {
@@ -125,7 +125,6 @@ int main(int argc, char** argv) {
                 } catch (const std::bad_variant_access& e) {
                     return make_basic_resp(400);
                 }
-                outbound_req_headers["Content-Type"] = "application/json";
 
                 std::string model;
                 if (auto model_it = req_body.find("model"); model_it != req_body.end() && model_it->second.is_string()) {
@@ -138,6 +137,7 @@ int main(int argc, char** argv) {
                 if (!service) {
                     return make_basic_resp(400, "Invalid model specified");
                 }
+
                 outbound_req_headers["Authorization"] = "Bearer " + keys.at(service->name).string();
                 if (service->name == "deepseek") {
                     req_body["user_id"] = user->name;
