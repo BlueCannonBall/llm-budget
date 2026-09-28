@@ -96,6 +96,14 @@ namespace sqlite {
 
     class Statement {
     protected:
+        struct ResetOnExit {
+            sqlite3_stmt* stmt = nullptr;
+
+            ~ResetOnExit() {
+                if (stmt) sqlite3_reset(stmt);
+            }
+        };
+
         template <size_t I, typename... Ts>
         void push_value(Row<Ts...>& row) {
             typename std::tuple_element<I, Row<Ts...>>::type value;
@@ -233,6 +241,7 @@ namespace sqlite {
         template <typename... Us>
         [[nodiscard]] Table<Us...> exec() {
             Table<Us...> ret;
+            ResetOnExit reset_on_exit {raw_stmt};
             for (;;) {
                 switch (int result = sqlite3_step(raw_stmt); result) {
                 case SQLITE_ROW:
@@ -240,26 +249,19 @@ namespace sqlite {
                     break;
 
                 case SQLITE_DONE:
-                    goto done;
+                    reset();
+                    reset_on_exit.stmt = nullptr;
+                    return ret;
 
                 default:
                     throw Error(errstr(result));
                 }
             }
-        done:
-            reset();
-            return ret;
         }
 
         template <typename... Us>
         std::generator<Row<Us...>> exec_generator() {
-            struct ResetOnExit {
-                sqlite3_stmt* stmt;
-
-                ~ResetOnExit() {
-                    if (stmt) sqlite3_reset(stmt);
-                }
-            } reset_on_exit {raw_stmt};
+            ResetOnExit reset_on_exit {raw_stmt};
             for (;;) {
                 switch (int result = sqlite3_step(raw_stmt); result) {
                 case SQLITE_ROW:
@@ -278,20 +280,21 @@ namespace sqlite {
         }
 
         void exec_void() {
+            ResetOnExit reset_on_exit {raw_stmt};
             for (;;) {
                 switch (int result = sqlite3_step(raw_stmt); result) {
                 case SQLITE_ROW:
                     break;
 
                 case SQLITE_DONE:
-                    goto done;
+                    reset();
+                    reset_on_exit.stmt = nullptr;
+                    return;
 
                 default:
                     throw Error(errstr(result));
                 }
             }
-        done:
-            reset();
         }
     };
 
@@ -307,24 +310,24 @@ namespace sqlite {
         Connection* conn;
 
     public:
-        Transaction(Connection* conn, TransactionType type):
-            conn(conn) {
+        Transaction(Connection& conn, TransactionType type):
+            conn(&conn) {
             switch (type) {
             default:
             case TRANSACTION_DEFAULT:
-                conn->exec("BEGIN");
+                conn.exec("BEGIN");
                 break;
 
             case TRANSACTION_IMMEDIATE:
-                conn->exec("BEGIN IMMEDIATE");
+                conn.exec("BEGIN IMMEDIATE");
                 break;
 
             case TRANSACTION_DEFERRED:
-                conn->exec("BEGIN DEFERRED");
+                conn.exec("BEGIN DEFERRED");
                 break;
 
             case TRANSACTION_EXCLUSIVE:
-                conn->exec("BEGIN EXCLUSIVE");
+                conn.exec("BEGIN EXCLUSIVE");
                 break;
             }
         }
