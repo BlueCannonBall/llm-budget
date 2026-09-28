@@ -139,6 +139,9 @@ int main(int argc, char** argv) {
                     return make_basic_resp(400, "Invalid model specified");
                 }
                 outbound_req_headers["Authorization"] = "Bearer " + keys.at(service->name).string();
+                if (service->name == "deepseek") {
+                    req_body["user_id"] = user->name;
+                }
 
                 auto now = std::chrono::system_clock::now();
 
@@ -151,7 +154,7 @@ int main(int argc, char** argv) {
                 using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
                 auto channel = std::make_shared<Channel<Message>>(8000);
 
-                pw::threadpool.schedule([user = std::move(*user), outbound_req_headers = std::move(outbound_req_headers), outbound_req_body = inbound_req.body, model = std::move(model), service = std::move(*service), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                pw::threadpool.schedule([user = std::move(*user), outbound_req_headers = std::move(outbound_req_headers), req_body = std::move(req_body), model = std::move(model), service = std::move(*service), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
                     bool sent_head = false;
 
                     auto send_basic_resp = [&sent_head](Channel<Message>& channel, uint16_t status_code, const std::string& what = {}) {
@@ -249,7 +252,7 @@ int main(int argc, char** argv) {
                             return ret;
                         },
                             32'000'000);
-                        if (pn::Status result = pw::fetch("POST", "https://api.deepseek.com/chat/completions", inbound_resp, outbound_req_body, outbound_req_headers); !result) {
+                        if (pn::Status result = pw::fetch("POST", service.base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 send_basic_resp(*channel_locked.get(), 502);
                             }
