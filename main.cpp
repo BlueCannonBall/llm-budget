@@ -9,22 +9,21 @@
 #include <sstream>
 #include <string>
 
-void report_usage(const SJSON::JSValue& usage, std::string_view model) {
+void report_usage(const SJSON::JSValue& usage, std::string_view model, std::chrono::system_clock::time_point request_time) {
     std::cout << "Got usage: " << usage.to_string(4) << std::endl;
     if (!usage.is_object()) {
         std::cout << "Cost estimate unavailable" << std::endl;
         return;
     }
-    auto cost = deepseek_cost_range(usage.object(), model);
-    if (!cost) {
+    auto amount = cost::calculate("deepseek", model, usage.object(), request_time);
+    if (!amount) {
         std::cout << "Cost estimate unavailable" << std::endl;
         return;
     }
-    std::ostringstream amounts;
-    amounts << std::fixed << std::setprecision(9)
-            << "$" << static_cast<double>(cost->off_peak_nano_usd) / 1'000'000'000
-            << " off-peak, $" << static_cast<double>(cost->peak_nano_usd) / 1'000'000'000 << " peak";
-    std::cout << "Estimated cost (USD; published September 27, 2026 prices): " << amounts.str() << std::endl;
+    std::ostringstream formatted;
+    formatted << std::fixed << std::setprecision(9)
+              << static_cast<double>(amount->nano_units) / 1'000'000'000;
+    std::cout << "Estimated cost (" << amount->currency << ", published prices): " << formatted.str() << std::endl;
 }
 
 template <typename F>
@@ -42,6 +41,22 @@ std::move_only_function<bool(std::vector<char>)> metered_receiver(F func, size_t
     };
 }
 
+pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}, std::string http_version = "HTTP/1.1") {
+    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code), std::move(headers), std::move(http_version));
+    if (!resp.headers.count("Content-Type")) {
+        resp.headers["Content-Type"] = "text/plain";
+    }
+    return resp;
+}
+
+pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::Headers headers = {}, std::string http_version = "HTTP/1.1") {
+    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what, std::move(headers), std::move(http_version));
+    if (!resp.headers.count("Content-Type")) {
+        resp.headers["Content-Type"] = "text/plain";
+    }
+    return resp;
+}
+
 int main() {
     (void) pn::init();
 
@@ -51,7 +66,7 @@ int main() {
         pw::Route {
             [](pw::Connection&, pw::Request& inbound_req) {
                 if (inbound_req.method != "POST") {
-                    return pw::Response::make_basic(405, {{"Allow", "POST"}});
+                    return make_basic_resp(405, {{"Allow", "POST"}});
                 }
 
                 pw::Headers outbound_req_headers;
@@ -59,22 +74,27 @@ int main() {
                 if (auto authorization_it = inbound_req.headers.find("Authorization"); authorization_it != inbound_req.headers.end()) {
                     outbound_req_headers["Authorization"] = authorization_it->second;
                 } else {
-                    return pw::Response::make_basic(401);
+                    return make_basic_resp(401);
                 }
 
                 SJSON::JSObject req_body;
                 try {
                     req_body = SJSON::Parse::string(inbound_req.body_to_string()).object();
                 } catch (const SJSON::sjson_parse_error& e) {
-                    return pw::Response::make_basic(400);
+                    return make_basic_resp(400);
                 } catch (const std::bad_variant_access& e) {
-                    return pw::Response::make_basic(400);
+                    return make_basic_resp(400);
                 }
                 outbound_req_headers["Content-Type"] = "application/json";
+
                 std::string model;
                 if (auto model_it = req_body.find("model"); model_it != req_body.end() && model_it->second.is_string()) {
                     model = model_it->second.string();
+                } else {
+                    return make_basic_resp(400, "Invalid model specified");
                 }
+
+                auto now = std::chrono::system_clock::now();
 
                 struct HeadMessage {
                     uint16_t status_code;
@@ -85,10 +105,27 @@ int main() {
                 using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
                 auto channel = std::make_shared<Channel<Message>>(8000);
 
-                pw::threadpool.schedule([outbound_req_headers = std::move(outbound_req_headers), outbound_req_body = std::move(inbound_req.body), model = std::move(model), channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                pw::threadpool.schedule([outbound_req_headers = std::move(outbound_req_headers), outbound_req_body = std::move(inbound_req.body), model = std::move(model), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
                     bool sent_head = false;
+
+                    auto send_basic_resp = [&sent_head](Channel<Message>& channel, uint16_t status_code, const std::string& what = {}) {
+                        if (!sent_head) {
+                            channel.send(HeadMessage {status_code, {{"Content-Type", "text/plain"}}});
+                            sent_head = true;
+
+                            std::string outbound_resp_body;
+                            if (what.empty()) {
+                                outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code);
+                            } else {
+                                outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what;
+                            }
+                            channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
+                        }
+                        channel.send(EndMessage {});
+                    };
+
                     try {
-                        pw::SSEParser sse_parser([&model](pw::SSEEvent event) -> bool {
+                        pw::SSEParser sse_parser([&model, now](pw::SSEEvent event) -> bool {
                             if (event.type != "message") return false;
                             if (event.data == "[DONE]") return true;
 
@@ -102,15 +139,15 @@ int main() {
                             }
 
                             if (auto usage_it = message.find("usage"); usage_it != message.end() && usage_it->second.is_object()) {
-                                report_usage(usage_it->second, model);
+                                report_usage(usage_it->second, model, now);
                             }
 
                             return true;
                         });
 
                         SJSON::Parse json_parser;
-                        json_parser.listen("usage", [&model](const SJSON::JSValue& value) {
-                            report_usage(value, model);
+                        json_parser.listen("usage", [&model, now](const SJSON::JSValue& value) {
+                            report_usage(value, model, now);
                         });
 
                         pw::Response inbound_resp;
@@ -142,12 +179,7 @@ int main() {
                             32'000'000);
                         if (pn::Status result = pw::fetch("POST", "https://api.deepseek.com/chat/completions", inbound_resp, outbound_req_body, outbound_req_headers); !result) {
                             if (auto channel_locked = channel.lock()) {
-                                if (!sent_head) {
-                                    channel_locked->send(HeadMessage {502, {{"Content-Type", "text/plain"}}});
-                                    std::string outbound_resp_body = "502 Bad Gateway";
-                                    channel_locked->send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
-                                }
-                                channel_locked->send(EndMessage {});
+                                send_basic_resp(*channel_locked.get(), 502);
                             }
                             return;
                         }
@@ -160,12 +192,7 @@ int main() {
                         }
                     } catch (...) {
                         if (auto channel_locked = channel.lock()) {
-                            if (!sent_head) {
-                                channel_locked->send(HeadMessage {500, {{"Content-Type", "text/plain"}}});
-                                std::string outbound_resp_body = "500 Internal Server Error";
-                                channel_locked->send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
-                            }
-                            channel_locked->send(EndMessage {});
+                            send_basic_resp(*channel_locked.get(), 500);
                         }
                     }
                 },
@@ -195,7 +222,7 @@ int main() {
                     },
                         outbound_resp_headers);
                 } else {
-                    return pw::Response::make_basic(500);
+                    return make_basic_resp(500);
                 }
             },
         });
