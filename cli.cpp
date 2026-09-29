@@ -1,6 +1,7 @@
 #include "cli.hpp"
 #include "database.hpp"
 #include <charconv>
+#include <ctime>
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
@@ -99,7 +100,23 @@ namespace cli {
                       << dollars(user.usage_limits.weekly_limit_nanodollars) << '\n';
         }
 
-        void print_window_usage(std::string_view name, uint64_t cost_nanodollars, uint64_t limit_nanodollars) {
+        std::string local_time(std::chrono::system_clock::time_point time) {
+            auto seconds = std::chrono::floor<std::chrono::seconds>(time);
+            std::time_t timestamp = std::chrono::system_clock::to_time_t(seconds);
+            std::tm calendar_time {};
+            if (!localtime_r(&timestamp, &calendar_time)) throw std::runtime_error("Cannot format reset time");
+
+            std::ostringstream out;
+            out << std::put_time(&calendar_time, "%Y-%m-%d %H:%M:%S") << '.'
+                << std::setfill('0') << std::setw(3)
+                << std::chrono::duration_cast<std::chrono::milliseconds>(time - seconds).count()
+                << ' ' << std::put_time(&calendar_time, "%Z %z");
+            return out.str();
+        }
+
+        void print_window_usage(std::string_view name, uint64_t cost_nanodollars, uint64_t limit_nanodollars,
+            std::optional<std::chrono::system_clock::time_point> started_at,
+            std::chrono::system_clock::duration duration, std::chrono::system_clock::time_point time) {
             std::cout << name << ": $" << dollars(cost_nanodollars) << " / $" << dollars(limit_nanodollars) << " (";
             if (limit_nanodollars == 0) {
                 std::cout << "n/a: zero limit";
@@ -107,7 +124,15 @@ namespace cli {
                 std::cout << std::fixed << std::setprecision(2)
                           << (long double) cost_nanodollars * 100 / limit_nanodollars << '%';
             }
-            std::cout << ")\n";
+            std::cout << ")";
+            if (limit_nanodollars == 0) {
+                std::cout << "; no automatic reset (zero limit)";
+            } else if (started_at && time < *started_at + duration) {
+                std::cout << "; resets at " << local_time(*started_at + duration);
+            } else {
+                std::cout << "; reset not scheduled";
+            }
+            std::cout << '\n';
         }
 
         User find_user(pn::StringView name) {
@@ -151,11 +176,16 @@ namespace cli {
                 if (show) {
                     print_user(user);
                 } else if (usage) {
-                    auto current_usage = get_user_usage(user.id);
+                    auto time = std::chrono::system_clock::now();
+                    auto current_usage = get_user_usage(user.id, time);
                     if (!current_usage) throw std::runtime_error("User no longer exists");
                     std::cout << user.name << '\n';
-                    print_window_usage("Five-hour", current_usage->five_hour_cost_nanodollars, current_usage->limits.five_hour_limit_nanodollars);
-                    print_window_usage("Weekly", current_usage->weekly_cost_nanodollars, current_usage->limits.weekly_limit_nanodollars);
+                    print_window_usage("Five-hour", current_usage->five_hour_cost_nanodollars,
+                        current_usage->limits.five_hour_limit_nanodollars, current_usage->limits.five_hour_window_started_at,
+                        std::chrono::hours {5}, time);
+                    print_window_usage("Weekly", current_usage->weekly_cost_nanodollars,
+                        current_usage->limits.weekly_limit_nanodollars, current_usage->limits.weekly_window_started_at,
+                        std::chrono::weeks {1}, time);
                 } else if (set_limits) {
                     if (!set_usage_limits(user.id, limits.five_hour, limits.weekly)) throw std::runtime_error("User no longer exists");
                     print_user(get_user(user.id).value());

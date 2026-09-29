@@ -210,22 +210,27 @@ int main(int argc, char** argv) {
                         UsageLimits usage_limits;
                         if (!(request_id = begin_request(user.id, usage_limits, now))) {
                             if (auto channel_locked = channel.lock()) {
-                                switch (request_id.error()) {
-                                case BEGIN_REQUEST_ERROR_USER_NOT_FOUND:
+                                if (request_id.error() == BEGIN_REQUEST_ERROR_USER_NOT_FOUND) {
                                     send_basic_resp(*channel_locked, 500);
-                                    break;
+                                } else if (!usage_limits.five_hour_limit_nanodollars || !usage_limits.weekly_limit_nanodollars) {
+                                    send_basic_resp(*channel_locked, 403);
+                                } else {
+                                    switch (request_id.error()) {
+                                    case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
+                                        send_basic_resp(*channel_locked, 422, std::format("Five-hour limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.five_hour_window_started_at + std::chrono::hours(5)))));
+                                        break;
 
-                                case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
-                                    send_basic_resp(*channel_locked, 422, std::format("Five-hour limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.five_hour_window_started_at + std::chrono::hours(5)))));
-                                    break;
+                                    case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
+                                        send_basic_resp(*channel_locked, 422, std::format("Weekly limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.weekly_window_started_at + std::chrono::weeks(1)))));
+                                        break;
 
-                                case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
-                                    send_basic_resp(*channel_locked, 422, std::format("Weekly limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.weekly_window_started_at + std::chrono::weeks(1)))));
-                                    break;
+                                    case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
+                                        send_basic_resp(*channel_locked, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1))))));
+                                        break;
 
-                                case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
-                                    send_basic_resp(*channel_locked, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1))))));
-                                    break;
+                                    default:
+                                        throw std::logic_error("Invalid BeginRequestError");
+                                    }
                                 }
                                 channel_locked->send(EndMessage {});
                             }

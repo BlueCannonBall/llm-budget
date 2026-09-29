@@ -1,17 +1,20 @@
 """Run with: python3 tests/cli.py ./llm-budget"""
 
+import os
 import pathlib
 import sqlite3
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 
 with tempfile.TemporaryDirectory() as directory:
-    def run(*args):
-        return subprocess.run([binary, *args], cwd=directory, text=True, capture_output=True)
+    def run(*args, timezone_name=None):
+        env = None if timezone_name is None else {**os.environ, "TZ": timezone_name}
+        return subprocess.run([binary, *args], cwd=directory, text=True, capture_output=True, env=env)
 
     assert run("--help").returncode == 0
     database = pathlib.Path(directory, "llm-budget.db")
@@ -31,16 +34,22 @@ with tempfile.TemporaryDirectory() as directory:
     assert empty_usage.returncode == 0, empty_usage.stderr
     assert "Five-hour: $0.000000000 / $1.250000000 (0.00%)" in empty_usage.stdout
     assert "Weekly: $0.000000000 / $10.000000001 (0.00%)" in empty_usage.stdout
+    assert empty_usage.stdout.count("reset not scheduled") == 2
 
     now_ms = int(db.execute("SELECT unixepoch() * 1000").fetchone()[0])
     db.execute("UPDATE users SET five_hour_window_started_at = ?, weekly_window_started_at = ? WHERE name = 'alice'", (now_ms, now_ms))
     db.execute("INSERT INTO requests (user_id, started_at, state, cost_nanodollars) VALUES (1, ?, 'completed', 625000000)", (now_ms,))
     db.execute("INSERT INTO requests (user_id, started_at, state) VALUES (1, ?, 'in_flight')", (now_ms,))
     db.commit()
-    current_usage = run("user", "usage", "alice")
+    current_usage = run("user", "usage", "alice", timezone_name="EST5")
     assert current_usage.returncode == 0, current_usage.stderr
     assert "Five-hour: $0.625000000 / $1.250000000 (50.00%)" in current_usage.stdout
     assert "Weekly: $0.625000000 / $10.000000001 (6.25%)" in current_usage.stdout
+    eastern = timezone(timedelta(hours=-5))
+    five_hour_reset = datetime.fromtimestamp((now_ms + 18_000_000) / 1000, eastern).strftime("%Y-%m-%d %H:%M:%S.000")
+    weekly_reset = datetime.fromtimestamp((now_ms + 604_800_000) / 1000, eastern).strftime("%Y-%m-%d %H:%M:%S.000")
+    assert f"resets at {five_hour_reset} EST -0500" in current_usage.stdout
+    assert f"resets at {weekly_reset} EST -0500" in current_usage.stdout
 
     db.execute("UPDATE users SET five_hour_window_started_at = ? WHERE name = 'alice'", (now_ms - 18_000_001,))
     db.commit()
@@ -48,6 +57,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert expired_usage.returncode == 0, expired_usage.stderr
     assert "Five-hour: $0.000000000 / $1.250000000 (0.00%)" in expired_usage.stdout
     assert "Weekly: $0.625000000 / $10.000000001 (6.25%)" in expired_usage.stdout
+    assert "Five-hour: $0.000000000 / $1.250000000 (0.00%); reset not scheduled" in expired_usage.stdout
 
     listed = run("user", "list")
     assert listed.returncode == 0
@@ -58,7 +68,7 @@ with tempfile.TemporaryDirectory() as directory:
     updated = run("user", "set-limits", "alice", "--five-hour-limit", "0", "--weekly-limit", "9223372036.854775807")
     assert updated.returncode == 0, updated.stderr
     assert db.execute("SELECT five_hour_limit_nanodollars, weekly_limit_nanodollars FROM users").fetchone() == (0, 9223372036854775807)
-    assert "Five-hour: $0.000000000 / $0.000000000 (n/a: zero limit)" in run("user", "usage", "alice").stdout
+    assert "Five-hour: $0.000000000 / $0.000000000 (n/a: zero limit); no automatic reset (zero limit)" in run("user", "usage", "alice").stdout
 
     old_hash = db.execute("SELECT api_key_hash FROM users").fetchone()[0]
     rotated = run("key", "rotate", "alice")

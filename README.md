@@ -74,7 +74,8 @@ the new API key once. Store it securely: the database stores only its SHA-256
 hash, and rotating immediately invalidates the old key. `user list` and
 `user show` print the ID, name, five-hour limit, and weekly limit, but never the
 key. `user usage` prints recorded spending in dollars and as a percentage of
-each limit. A missing user is an error.
+each limit, with active window reset times in the machine's local timezone.
+A missing user is an error.
 
 ## Cost estimation
 
