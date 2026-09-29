@@ -93,8 +93,8 @@ namespace cli {
                 return out.str();
             };
             std::cout << user.id << '\t' << user.name << '\t'
-                      << dollars(user.five_hour_limit_nanodollars) << '\t'
-                      << dollars(user.weekly_limit_nanodollars) << '\n';
+                      << dollars(user.usage_limits.five_hour_limit_nanodollars) << '\t'
+                      << dollars(user.usage_limits.weekly_limit_nanodollars) << '\n';
         }
 
         User find_user(pn::StringView name) {
@@ -137,8 +137,8 @@ namespace cli {
                 if (show) {
                     print_user(user);
                 } else if (set_limits) {
-                    if (!set_user_limits(user.id, limits.five_hour, limits.weekly)) throw std::runtime_error("User no longer exists");
-                    print_user(get_user(user.id));
+                    if (!set_usage_limits(user.id, limits.five_hour, limits.weekly)) throw std::runtime_error("User no longer exists");
+                    print_user(get_user(user.id).value());
                 } else {
                     std::string key;
                     if (!rotate_api_key(user.id, key)) throw std::runtime_error("User no longer exists");

@@ -173,9 +173,31 @@ int main(int argc, char** argv) {
                         channel.send(EndMessage {});
                     };
 
-                    std::optional<request_id_t> request_id;
+                    std::expected<request_id_t, BeginRequestError> request_id;
                     try {
-                        request_id = begin_request(user.id, now);
+                        UsageLimits usage_limits;
+                        if (!(request_id = begin_request(user.id, usage_limits, now))) {
+                            if (auto channel_locked = channel.lock()) {
+                                switch (request_id.error()) {
+                                case BEGIN_REQUEST_ERROR_USER_NOT_FOUND:
+                                    send_basic_resp(*channel_locked, 500);
+                                    break;
+
+                                case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
+                                    send_basic_resp(*channel_locked, 422, std::format("Five-hour limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.five_hour_window_started_at + std::chrono::hours(5)))));
+                                    break;
+
+                                case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
+                                    send_basic_resp(*channel_locked, 422, std::format("Weekly limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.weekly_window_started_at + std::chrono::weeks(1)))));
+                                    break;
+
+                                case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
+                                    send_basic_resp(*channel_locked, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1))))));
+                                    break;
+                                }
+                            }
+                            return;
+                        }
 
                         pw::SSEParser sse_parser([&model, &service, now, request_id = *request_id](pw::SSEEvent event) -> bool {
                             if (event.type != "message") return false;
@@ -254,7 +276,7 @@ int main(int argc, char** argv) {
                             32'000'000);
                         if (pn::Status result = pw::fetch("POST", service.base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
                             if (auto channel_locked = channel.lock()) {
-                                send_basic_resp(*channel_locked.get(), 502);
+                                send_basic_resp(*channel_locked, 502);
                             }
                             end_request(*request_id, REQUEST_STATE_INTERRUPTED);
                             return;
@@ -269,7 +291,7 @@ int main(int argc, char** argv) {
                         end_request(*request_id, REQUEST_STATE_COMPLETED);
                     } catch (...) {
                         if (auto channel_locked = channel.lock()) {
-                            send_basic_resp(*channel_locked.get(), 500);
+                            send_basic_resp(*channel_locked, 500);
                         }
                         if (request_id) end_request(*request_id, REQUEST_STATE_UNKNOWN);
                     }

@@ -54,7 +54,7 @@ void init() {
 
     conn.exec(R"(
         CREATE INDEX IF NOT EXISTS requests_user_started_at_idx
-            ON requests(user_id, started_at);
+        ON requests(user_id, started_at);
     )");
 
     conn.exec(R"(
@@ -87,9 +87,13 @@ static std::vector<unsigned char> hex_to_bytes(pn::StringView hex) {
     return ret;
 }
 
+static std::chrono::system_clock::time_point from_unix_ms(sqlite::Int64 milliseconds) {
+    return std::chrono::sys_time<std::chrono::milliseconds> {std::chrono::milliseconds {milliseconds}};
+}
+
 static std::optional<std::chrono::system_clock::time_point> from_unix_ms(std::optional<sqlite::Int64> milliseconds) {
     if (!milliseconds) return std::nullopt;
-    return std::chrono::sys_time<std::chrono::milliseconds> {std::chrono::milliseconds {*milliseconds}};
+    return from_unix_ms(*milliseconds);
 }
 
 static sqlite::Int64 to_unix_ms(std::chrono::system_clock::time_point time) {
@@ -137,10 +141,12 @@ static User user_from_row(const UserRow& row) {
     return User {
         .id = (user_id_t) std::get<0>(row),
         .name = std::get<1>(row),
-        .five_hour_limit_nanodollars = (uint64_t) std::get<2>(row),
-        .weekly_limit_nanodollars = (uint64_t) std::get<3>(row),
-        .five_hour_window_started_at = from_unix_ms(std::get<4>(row)),
-        .weekly_window_started_at = from_unix_ms(std::get<5>(row)),
+        .usage_limits = {
+            .five_hour_limit_nanodollars = (uint64_t) std::get<2>(row),
+            .weekly_limit_nanodollars = (uint64_t) std::get<3>(row),
+            .five_hour_window_started_at = from_unix_ms(std::get<4>(row)),
+            .weekly_window_started_at = from_unix_ms(std::get<5>(row)),
+        },
     };
 }
 
@@ -167,26 +173,40 @@ user_id_t make_user(pn::StringView name, uint64_t five_hour_limit_nanodollars, u
     stmt.bind(checked_nanodollars(five_hour_limit_nanodollars), 3);
     stmt.bind(checked_nanodollars(weekly_limit_nanodollars), 4);
 
-    auto result = stmt.exec<sqlite::Int64>().at(0);
+    auto row = stmt.exec<sqlite::Int64>().at(0);
     api_key = std::move(new_api_key);
-    return std::get<0>(result);
+    return std::get<0>(row);
 }
 
-User get_user(user_id_t id) {
+std::optional<User> get_user(user_id_t id) {
     thread_local sqlite::Statement stmt(conn, R"(
-        SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
+        SELECT
+            id,
+            name,
+            five_hour_limit_nanodollars,
+            weekly_limit_nanodollars,
+            five_hour_window_started_at,
+            weekly_window_started_at
         FROM users
         WHERE id = ?;
     )");
 
     stmt.bind((sqlite::Int64) id, 1);
 
-    return user_from_row(stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>().at(0));
+    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (rows.empty()) return std::nullopt;
+    return user_from_row(rows.front());
 }
 
 std::optional<User> get_user_by_api_key(pn::StringView api_key) {
     thread_local sqlite::Statement stmt(conn, R"(
-        SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
+        SELECT
+            id,
+            name,
+            five_hour_limit_nanodollars,
+            weekly_limit_nanodollars,
+            five_hour_window_started_at,
+            weekly_window_started_at
         FROM users
         WHERE api_key_hash = ?;
     )");
@@ -198,28 +218,40 @@ std::optional<User> get_user_by_api_key(pn::StringView api_key) {
     }
     stmt.bind(hash_api_key(api_key), 1);
 
-    auto result = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
-    if (result.empty()) return std::nullopt;
-    return user_from_row(result.front());
+    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (rows.empty()) return std::nullopt;
+    return user_from_row(rows.front());
 }
 
 std::optional<User> get_user_by_name(pn::StringView name) {
     thread_local sqlite::Statement stmt(conn, R"(
-        SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
+        SELECT
+            id,
+            name,
+            five_hour_limit_nanodollars,
+            weekly_limit_nanodollars,
+            five_hour_window_started_at,
+            weekly_window_started_at
         FROM users
         WHERE name = ?;
     )");
 
     stmt.bind(name, 1);
 
-    auto result = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
-    if (result.empty()) return std::nullopt;
-    return user_from_row(result.front());
+    auto rows = stmt.exec<sqlite::Int64, std::string, sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (rows.empty()) return std::nullopt;
+    return user_from_row(rows.front());
 }
 
 std::vector<User> list_users() {
     thread_local sqlite::Statement stmt(conn, R"(
-        SELECT id, name, five_hour_limit_nanodollars, weekly_limit_nanodollars, five_hour_window_started_at, weekly_window_started_at
+        SELECT
+            id,
+            name,
+            five_hour_limit_nanodollars,
+            weekly_limit_nanodollars,
+            five_hour_window_started_at,
+            weekly_window_started_at
         FROM users
         ORDER BY id;
     )");
@@ -231,7 +263,30 @@ std::vector<User> list_users() {
     return ret;
 }
 
-bool set_user_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars) {
+std::optional<UsageLimits> get_usage_limits(user_id_t id) {
+    thread_local sqlite::Statement stmt(conn, R"(
+        SELECT
+            five_hour_limit_nanodollars,
+            weekly_limit_nanodollars,
+            five_hour_window_started_at,
+            weekly_window_started_at
+        FROM users
+        WHERE id = ?;
+    )");
+
+    stmt.bind((sqlite::Int64) id, 1);
+
+    auto rows = stmt.exec<sqlite::Int64, sqlite::Int64, std::optional<sqlite::Int64>, std::optional<sqlite::Int64>>();
+    if (rows.empty()) return std::nullopt;
+    return UsageLimits {
+        .five_hour_limit_nanodollars = (uint64_t) std::get<0>(rows.front()),
+        .weekly_limit_nanodollars = (uint64_t) std::get<1>(rows.front()),
+        .five_hour_window_started_at = from_unix_ms(std::get<2>(rows.front())),
+        .weekly_window_started_at = from_unix_ms(std::get<3>(rows.front())),
+    };
+}
+
+bool set_usage_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars) {
     thread_local sqlite::Statement stmt(conn, R"(
         UPDATE users
         SET
@@ -267,25 +322,106 @@ bool rotate_api_key(user_id_t id, std::string& api_key) {
     return true;
 }
 
-request_id_t begin_request(user_id_t user_id, std::chrono::system_clock::time_point time) {
-    thread_local sqlite::Statement stmt(conn, R"(
-        INSERT INTO requests (
-            user_id,
-            started_at,
-            state)
-        VALUES (
-            ?,
-            ?,
-            'in_flight'
-        )
-        RETURNING id;
-    )");
+std::expected<request_id_t, BeginRequestError> begin_request(user_id_t user_id, UsageLimits& usage_limits, std::chrono::system_clock::time_point time) {
+    sqlite::Transaction transaction(conn, sqlite::TRANSACTION_IMMEDIATE);
 
-    stmt.bind((sqlite::Int64) user_id, 1);
-    stmt.bind((sqlite::Int64) to_unix_ms(time), 2);
+    std::optional<UsageLimits> current_usage_limits = get_usage_limits(user_id);
+    if (!current_usage_limits) {
+        return std::unexpected(BEGIN_REQUEST_ERROR_USER_NOT_FOUND);
+    }
 
-    auto result = stmt.exec<sqlite::Int64>().at(0);
-    return std::get<0>(result);
+    {
+        thread_local sqlite::Statement stmt(conn, R"(
+            UPDATE users
+            SET
+                five_hour_window_started_at = IIF(
+                    five_hour_window_started_at IS NULL
+                    OR five_hour_window_started_at <= ?1 - 18000000,
+                    ?1,
+                    five_hour_window_started_at
+                ),
+                weekly_window_started_at = IIF(
+                    weekly_window_started_at IS NULL
+                    OR weekly_window_started_at <= ?1 - 604800000,
+                    ?1,
+                    weekly_window_started_at
+                )
+            WHERE id = ?2
+            RETURNING
+                five_hour_window_started_at,
+                weekly_window_started_at;
+        )");
+
+        stmt.bind(to_unix_ms(time), 1);
+        stmt.bind((sqlite::Int64) user_id, 2);
+
+        auto rows = stmt.exec<sqlite::Int64, sqlite::Int64>();
+        if (rows.empty()) return std::unexpected(BEGIN_REQUEST_ERROR_USER_NOT_FOUND);
+        current_usage_limits->five_hour_window_started_at = from_unix_ms(std::get<0>(rows.front()));
+        current_usage_limits->weekly_window_started_at = from_unix_ms(std::get<1>(rows.front()));
+    }
+
+    usage_limits = std::move(*current_usage_limits);
+
+    {
+        thread_local sqlite::Statement stmt(conn, R"(
+            SELECT
+                COALESCE(SUM(r.cost_nanodollars) FILTER (
+                    WHERE r.started_at >= u.five_hour_window_started_at
+                ), 0) AS five_hour_usage,
+
+                COALESCE(SUM(r.cost_nanodollars) FILTER (
+                    WHERE r.started_at >= u.weekly_window_started_at
+                ), 0) AS weekly_usage
+
+            FROM users u
+
+            LEFT JOIN requests r
+                ON r.user_id = u.id
+                AND r.started_at >= MIN(
+                    u.five_hour_window_started_at,
+                    u.weekly_window_started_at
+                )
+
+            WHERE u.id = ?1;
+        )");
+
+        stmt.bind((sqlite::Int64) user_id, 1);
+
+        auto row = stmt.exec<sqlite::Int64, sqlite::Int64>().at(0);
+        if (std::get<1>(row) >= usage_limits.weekly_limit_nanodollars &&
+            std::get<0>(row) >= usage_limits.five_hour_limit_nanodollars) {
+            return std::unexpected(BEGIN_REQUEST_ERROR_BOTH_LIMITS);
+        }
+        if (std::get<1>(row) >= usage_limits.weekly_limit_nanodollars) {
+            return std::unexpected(BEGIN_REQUEST_ERROR_WEEKLY_LIMIT);
+        }
+        if (std::get<0>(row) >= usage_limits.five_hour_limit_nanodollars) {
+            return std::unexpected(BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT);
+        }
+    }
+
+    {
+        thread_local sqlite::Statement stmt(conn, R"(
+            INSERT INTO requests (
+                user_id,
+                started_at,
+                state)
+            VALUES (
+                ?,
+                ?,
+                'in_flight'
+            )
+            RETURNING id;
+        )");
+
+        stmt.bind((sqlite::Int64) user_id, 1);
+        stmt.bind((sqlite::Int64) to_unix_ms(time), 2);
+
+        auto row = stmt.exec<sqlite::Int64>().at(0);
+        transaction.commit();
+        return std::get<0>(row);
+    }
 }
 
 void update_request(request_id_t id, uint64_t cost_nanodollars) {
