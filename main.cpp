@@ -18,6 +18,17 @@ struct Service {
     std::string base_url;
 };
 
+struct HeadMessage {
+    uint16_t status_code;
+    pw::Headers headers;
+};
+
+using BodyMessage = std::vector<char>;
+
+struct EndMessage {};
+
+using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
+
 std::optional<Service> model_to_service(std::string_view model) {
     if (model == "deepseek-v4-pro" || model == "deepseek-flash") {
         return Service {"deepseek", "https://api.deepseek.com"};
@@ -32,16 +43,16 @@ void print_cost(const cost::Money& amount, const User& user, request_id_t reques
     SPDLOG_INFO("Estimated cost: {} {} (user={} id={}, request={}, service={}, model={})", formatted.str(), amount.currency, user.name, user.id, request_id, service, model);
 }
 
-pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}, std::string http_version = "HTTP/1.1") {
-    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code), std::move(headers), std::move(http_version));
+pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}) {
+    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code), std::move(headers));
     if (!resp.headers.count("Content-Type")) {
         resp.headers["Content-Type"] = "text/plain";
     }
     return resp;
 }
 
-pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::Headers headers = {}, std::string http_version = "HTTP/1.1") {
-    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what, std::move(headers), std::move(http_version));
+pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::Headers headers = {}) {
+    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what, std::move(headers));
     if (!resp.headers.count("Content-Type")) {
         resp.headers["Content-Type"] = "text/plain";
     }
@@ -79,6 +90,28 @@ auto logged_route(F func) {
         }
     };
 }
+
+void send_basic_resp(Channel<Message>& channel, uint16_t status_code, pw::Headers headers = {}) {
+    if (!headers.count("Content-Type")) {
+        headers["Content-Type"] = "text/plain";
+    }
+    channel.send(HeadMessage {status_code, std::move(headers)});
+
+    std::string outbound_resp_body;
+    outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code);
+    channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
+};
+
+void send_basic_resp(Channel<Message>& channel, uint16_t status_code, const std::string& what, pw::Headers headers = {}) {
+    if (!headers.count("Content-Type")) {
+        headers["Content-Type"] = "text/plain";
+    }
+    channel.send(HeadMessage {status_code, std::move(headers)});
+
+    std::string outbound_resp_body;
+    outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what;
+    channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
+};
 
 int main(int argc, char** argv) {
     (void) pn::init();
@@ -162,38 +195,14 @@ int main(int argc, char** argv) {
 
                 auto now = std::chrono::system_clock::now();
 
-                struct HeadMessage {
-                    uint16_t status_code;
-                    pw::Headers headers;
-                };
-                using BodyMessage = std::vector<char>;
-                struct EndMessage {};
-                using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
                 auto channel = std::make_shared<Channel<Message>>(8000);
-
                 pw::threadpool.schedule([user = std::move(*user), outbound_req_headers = std::move(outbound_req_headers), req_body = std::move(req_body), model = std::move(model), service = std::move(*service), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
                     bool sent_head = false;
-
-                    auto send_basic_resp = [&sent_head](Channel<Message>& channel, uint16_t status_code, const std::string& what = {}) {
-                        if (!sent_head) {
-                            channel.send(HeadMessage {status_code, {{"Content-Type", "text/plain"}}});
-                            sent_head = true;
-
-                            std::string outbound_resp_body;
-                            if (what.empty()) {
-                                outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code);
-                            } else {
-                                outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what;
-                            }
-                            channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
-                        }
-                        channel.send(EndMessage {});
-                    };
-
                     std::expected<request_id_t, BeginRequestError> request_id;
                     auto handle_failure = [&]() {
                         if (auto channel_locked = channel.lock()) {
-                            send_basic_resp(*channel_locked, 500);
+                            if (!sent_head) send_basic_resp(*channel_locked, 500);
+                            channel_locked->send(EndMessage {});
                         }
                         if (request_id) end_request(*request_id, REQUEST_STATE_UNKNOWN);
                     };
@@ -218,6 +227,7 @@ int main(int argc, char** argv) {
                                     send_basic_resp(*channel_locked, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1))))));
                                     break;
                                 }
+                                channel_locked->send(EndMessage {});
                             }
                             return;
                         }
@@ -299,7 +309,8 @@ int main(int argc, char** argv) {
                             32'000'000);
                         if (pn::Status result = pw::fetch("POST", service.base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
                             if (auto channel_locked = channel.lock()) {
-                                send_basic_resp(*channel_locked, 502);
+                                if (!sent_head) send_basic_resp(*channel_locked, 502);
+                                channel_locked->send(EndMessage {});
                             }
                             end_request(*request_id, REQUEST_STATE_INTERRUPTED);
                             return;
