@@ -64,6 +64,7 @@ most nine decimal places (stored as nanodollars).
 ./llm-budget user add alice --five-hour-limit 1.25 --weekly-limit 10
 ./llm-budget user list
 ./llm-budget user show alice
+./llm-budget user usage alice
 ./llm-budget user set-limits alice --five-hour-limit 2 --weekly-limit 15
 ./llm-budget key rotate alice
 ```
@@ -72,7 +73,8 @@ most nine decimal places (stored as nanodollars).
 the new API key once. Store it securely: the database stores only its SHA-256
 hash, and rotating immediately invalidates the old key. `user list` and
 `user show` print the ID, name, five-hour limit, and weekly limit, but never the
-key. A missing user is an error.
+key. `user usage` prints recorded spending in dollars and as a percentage of
+each limit. A missing user is an error.
 
 ## Cost estimation
 

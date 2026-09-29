@@ -31,6 +31,12 @@ struct User {
     UsageLimits usage_limits;
 };
 
+struct UserUsage {
+    UsageLimits limits;
+    uint64_t five_hour_cost_nanodollars;
+    uint64_t weekly_cost_nanodollars;
+};
+
 enum BeginRequestError {
     BEGIN_REQUEST_ERROR_USER_NOT_FOUND,
     BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT,
@@ -46,6 +52,7 @@ std::optional<User> get_user_by_api_key(pn::StringView api_key);
 std::optional<User> get_user_by_name(pn::StringView name);
 std::vector<User> list_users();
 std::optional<UsageLimits> get_usage_limits(user_id_t id);
+std::optional<UserUsage> get_user_usage(user_id_t id, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
 bool set_usage_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars);
 bool rotate_api_key(user_id_t id, std::string& api_key);
 

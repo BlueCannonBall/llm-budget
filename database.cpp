@@ -286,6 +286,35 @@ std::optional<UsageLimits> get_usage_limits(user_id_t id) {
     };
 }
 
+std::optional<UserUsage> get_user_usage(user_id_t id, std::chrono::system_clock::time_point time) {
+    sqlite::Transaction transaction(conn);
+    auto user = get_user(id);
+    if (!user) return std::nullopt;
+
+    thread_local sqlite::Statement stmt(conn, R"(
+        SELECT COALESCE(SUM(cost_nanodollars), 0)
+        FROM requests
+        WHERE user_id = ? AND started_at >= ?;
+    )");
+
+    auto cost_since = [id](std::chrono::system_clock::time_point start) {
+        stmt.bind((sqlite::Int64) id, 1);
+        stmt.bind(to_unix_ms(start), 2);
+        return (uint64_t) std::get<0>(stmt.exec<sqlite::Int64>().at(0));
+    };
+
+    UserUsage ret {.limits = user->usage_limits};
+    if (ret.limits.five_hour_window_started_at && time < *ret.limits.five_hour_window_started_at + std::chrono::hours {5}) {
+        ret.five_hour_cost_nanodollars = cost_since(*ret.limits.five_hour_window_started_at);
+    }
+    if (ret.limits.weekly_window_started_at && time < *ret.limits.weekly_window_started_at + std::chrono::weeks {1}) {
+        ret.weekly_cost_nanodollars = cost_since(*ret.limits.weekly_window_started_at);
+    }
+
+    transaction.commit();
+    return ret;
+}
+
 bool set_usage_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars) {
     thread_local sqlite::Statement stmt(conn, R"(
         UPDATE users
@@ -389,14 +418,16 @@ std::expected<request_id_t, BeginRequestError> begin_request(user_id_t user_id, 
         stmt.bind((sqlite::Int64) user_id, 1);
 
         auto row = stmt.exec<sqlite::Int64, sqlite::Int64>().at(0);
-        if (std::get<1>(row) >= usage_limits.weekly_limit_nanodollars &&
-            std::get<0>(row) >= usage_limits.five_hour_limit_nanodollars) {
+        uint64_t five_hour_cost_nanodollars = (uint64_t) std::get<0>(row);
+        uint64_t weekly_cost_nanodollars = (uint64_t) std::get<1>(row);
+        if (weekly_cost_nanodollars >= usage_limits.weekly_limit_nanodollars &&
+            five_hour_cost_nanodollars >= usage_limits.five_hour_limit_nanodollars) {
             return std::unexpected(BEGIN_REQUEST_ERROR_BOTH_LIMITS);
         }
-        if (std::get<1>(row) >= usage_limits.weekly_limit_nanodollars) {
+        if (weekly_cost_nanodollars >= usage_limits.weekly_limit_nanodollars) {
             return std::unexpected(BEGIN_REQUEST_ERROR_WEEKLY_LIMIT);
         }
-        if (std::get<0>(row) >= usage_limits.five_hour_limit_nanodollars) {
+        if (five_hour_cost_nanodollars >= usage_limits.five_hour_limit_nanodollars) {
             return std::unexpected(BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT);
         }
     }

@@ -27,6 +27,28 @@ with tempfile.TemporaryDirectory() as directory:
     db = sqlite3.connect(database)
     assert db.execute("SELECT five_hour_limit_nanodollars, weekly_limit_nanodollars FROM users").fetchone() == (1250000000, 10000000001)
 
+    empty_usage = run("user", "usage", "alice")
+    assert empty_usage.returncode == 0, empty_usage.stderr
+    assert "Five-hour: $0.000000000 / $1.250000000 (0.00%)" in empty_usage.stdout
+    assert "Weekly: $0.000000000 / $10.000000001 (0.00%)" in empty_usage.stdout
+
+    now_ms = int(db.execute("SELECT unixepoch() * 1000").fetchone()[0])
+    db.execute("UPDATE users SET five_hour_window_started_at = ?, weekly_window_started_at = ? WHERE name = 'alice'", (now_ms, now_ms))
+    db.execute("INSERT INTO requests (user_id, started_at, state, cost_nanodollars) VALUES (1, ?, 'completed', 625000000)", (now_ms,))
+    db.execute("INSERT INTO requests (user_id, started_at, state) VALUES (1, ?, 'in_flight')", (now_ms,))
+    db.commit()
+    current_usage = run("user", "usage", "alice")
+    assert current_usage.returncode == 0, current_usage.stderr
+    assert "Five-hour: $0.625000000 / $1.250000000 (50.00%)" in current_usage.stdout
+    assert "Weekly: $0.625000000 / $10.000000001 (6.25%)" in current_usage.stdout
+
+    db.execute("UPDATE users SET five_hour_window_started_at = ? WHERE name = 'alice'", (now_ms - 18_000_001,))
+    db.commit()
+    expired_usage = run("user", "usage", "alice")
+    assert expired_usage.returncode == 0, expired_usage.stderr
+    assert "Five-hour: $0.000000000 / $1.250000000 (0.00%)" in expired_usage.stdout
+    assert "Weekly: $0.625000000 / $10.000000001 (6.25%)" in expired_usage.stdout
+
     listed = run("user", "list")
     assert listed.returncode == 0
     assert "alice\t1.250000000\t10.000000001" in listed.stdout
@@ -36,6 +58,7 @@ with tempfile.TemporaryDirectory() as directory:
     updated = run("user", "set-limits", "alice", "--five-hour-limit", "0", "--weekly-limit", "9223372036.854775807")
     assert updated.returncode == 0, updated.stderr
     assert db.execute("SELECT five_hour_limit_nanodollars, weekly_limit_nanodollars FROM users").fetchone() == (0, 9223372036854775807)
+    assert "Five-hour: $0.000000000 / $0.000000000 (n/a: zero limit)" in run("user", "usage", "alice").stdout
 
     old_hash = db.execute("SELECT api_key_hash FROM users").fetchone()[0]
     rotated = run("key", "rotate", "alice")
@@ -52,5 +75,6 @@ with tempfile.TemporaryDirectory() as directory:
     assert reordered.returncode == 0, reordered.stderr
     assert db.execute("SELECT five_hour_limit_nanodollars, weekly_limit_nanodollars FROM users").fetchone() == (2000000000, 3000000000)
     assert run("user", "show", "missing").returncode != 0
+    assert run("user", "usage", "missing").returncode != 0
     assert run("key", "rotate", "missing").returncode != 0
     assert run("user", "add", "alice", "--five-hour-limit", "1", "--weekly-limit", "1").returncode != 0

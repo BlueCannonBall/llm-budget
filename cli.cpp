@@ -26,6 +26,7 @@ namespace cli {
                 << "  " << program << " user add NAME --five-hour-limit DOLLARS --weekly-limit DOLLARS\n"
                 << "  " << program << " user list\n"
                 << "  " << program << " user show NAME\n"
+                << "  " << program << " user usage NAME\n"
                 << "  " << program << " user set-limits NAME --five-hour-limit DOLLARS --weekly-limit DOLLARS\n"
                 << "  " << program << " key rotate NAME\n";
         }
@@ -86,15 +87,27 @@ namespace cli {
             return {*five_hour, *weekly};
         }
 
+        std::string dollars(uint64_t amount) {
+            std::ostringstream out;
+            out << amount / nanos_per_dollar << '.' << std::setfill('0') << std::setw(9) << amount % nanos_per_dollar;
+            return out.str();
+        }
+
         void print_user(const User& user) {
-            auto dollars = [](uint64_t amount) {
-                std::ostringstream out;
-                out << amount / nanos_per_dollar << '.' << std::setfill('0') << std::setw(9) << amount % nanos_per_dollar;
-                return out.str();
-            };
             std::cout << user.id << '\t' << user.name << '\t'
                       << dollars(user.usage_limits.five_hour_limit_nanodollars) << '\t'
                       << dollars(user.usage_limits.weekly_limit_nanodollars) << '\n';
+        }
+
+        void print_window_usage(std::string_view name, uint64_t cost_nanodollars, uint64_t limit_nanodollars) {
+            std::cout << name << ": $" << dollars(cost_nanodollars) << " / $" << dollars(limit_nanodollars) << " (";
+            if (limit_nanodollars == 0) {
+                std::cout << "n/a: zero limit";
+            } else {
+                std::cout << std::fixed << std::setprecision(2)
+                          << (long double) cost_nanodollars * 100 / limit_nanodollars << '%';
+            }
+            std::cout << ")\n";
         }
 
         User find_user(pn::StringView name) {
@@ -110,9 +123,10 @@ namespace cli {
             bool set_limits = group == "user" && command == "set-limits";
             bool list = group == "user" && command == "list" && argc == 3;
             bool show = group == "user" && command == "show" && argc == 4;
+            bool usage = group == "user" && command == "usage" && argc == 4;
             bool rotate = group == "key" && command == "rotate" && argc == 4;
 
-            if (!list && !show && !rotate && !add && !set_limits) {
+            if (!list && !show && !usage && !rotate && !add && !set_limits) {
                 print_usage(std::cerr, argv[0]);
                 return 2;
             }
@@ -136,6 +150,12 @@ namespace cli {
                 User user = find_user(argv[3]);
                 if (show) {
                     print_user(user);
+                } else if (usage) {
+                    auto current_usage = get_user_usage(user.id);
+                    if (!current_usage) throw std::runtime_error("User no longer exists");
+                    std::cout << user.name << '\n';
+                    print_window_usage("Five-hour", current_usage->five_hour_cost_nanodollars, current_usage->limits.five_hour_limit_nanodollars);
+                    print_window_usage("Weekly", current_usage->weekly_cost_nanodollars, current_usage->limits.weekly_limit_nanodollars);
                 } else if (set_limits) {
                     if (!set_usage_limits(user.id, limits.five_hour, limits.weekly)) throw std::runtime_error("User no longer exists");
                     print_user(get_user(user.id).value());
