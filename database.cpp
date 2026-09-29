@@ -9,6 +9,7 @@
 static sqlite::Connection make_conn() {
     sqlite::Connection ret("llm-budget.db");
     ret.exec("PRAGMA foreign_keys = ON");
+    ret.exec("PRAGMA busy_timeout = 5000");
     return ret;
 }
 
