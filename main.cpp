@@ -91,6 +91,59 @@ auto logged_route(F func) {
     };
 }
 
+std::string reset_time_utc(std::chrono::system_clock::time_point reset_at) {
+    auto seconds = std::chrono::ceil<std::chrono::seconds>(reset_at);
+    return pw::build_date(std::chrono::system_clock::to_time_t(seconds));
+}
+
+std::string window_reset_time_utc(std::optional<std::chrono::system_clock::time_point> started_at,
+    std::chrono::system_clock::duration duration, std::chrono::system_clock::time_point time, uint64_t limit_nanodollars) {
+    if (limit_nanodollars == 0) return "No automatic reset";
+    if (!started_at || time >= *started_at + duration) return "Not scheduled";
+    return reset_time_utc(*started_at + duration);
+}
+
+pw::Response usage_page(uint16_t status_code, const std::string& details = {}) {
+    std::string html = R"(<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LLM Budget usage</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css" integrity="sha384-NZhm4G1I7BpEGdjDKnzEfy3d78xvy7ECKUwwnKTYi036z42IyF056PbHfpQLIYgL" crossorigin="anonymous">
+<main><h1>LLM Budget usage</h1><form method="post" action="usage" autocomplete="off">
+<label for="api-key">API key</label> <input id="api-key" name="api_key" type="password" maxlength="64" required autocomplete="off">
+<button type="submit">Show usage</button></form>)";
+    html += details;
+    html += "</main></html>";
+    return pw::Response(status_code, html, {
+        {"Content-Type", "text/html; charset=utf-8"},
+        {"Cache-Control", "no-store"},
+        {"Referrer-Policy", "no-referrer"},
+        {"Content-Security-Policy", "default-src 'none'; style-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
+        {"X-Content-Type-Options", "nosniff"},
+    });
+}
+
+std::string usage_details(const User& user, const UserUsage& usage, std::chrono::system_clock::time_point time) {
+    auto row = [time](std::string_view name, uint64_t cost, uint64_t limit,
+                   std::optional<std::chrono::system_clock::time_point> started_at, std::chrono::system_clock::duration duration) {
+        std::ostringstream result;
+        result << "<tr><th scope=\"row\">" << name << "</th><td>";
+        if (limit == 0) {
+            result << "n/a";
+        } else {
+            result << std::fixed << std::setprecision(2) << (long double) cost * 100 / limit << '%';
+        }
+        result << "</td><td>" << window_reset_time_utc(started_at, duration, time, limit) << "</td></tr>";
+        return result.str();
+    };
+
+    std::string details = "<h2>Usage for " + pw::xml_escape(user.name) + "</h2>";
+    details += "<table><thead><tr><th>Window</th><th>Used</th><th>Reset (UTC)</th></tr></thead><tbody>";
+    details += row("Five-hour", usage.five_hour_cost_nanodollars, usage.limits.five_hour_limit_nanodollars,
+        usage.limits.five_hour_window_started_at, std::chrono::hours {5});
+    details += row("Weekly", usage.weekly_cost_nanodollars, usage.limits.weekly_limit_nanodollars,
+        usage.limits.weekly_window_started_at, std::chrono::weeks {1});
+    details += "</tbody></table>";
+    return details;
+}
+
 void send_basic_resp(Channel<Message>& channel, uint16_t status_code, pw::Headers headers = {}) {
     if (!headers.count("Content-Type")) {
         headers["Content-Type"] = "text/plain";
@@ -143,6 +196,33 @@ int main(int argc, char** argv) {
         }
         return make_basic_resp(status_code, std::string(what));
     };
+
+    server.route("/usage",
+        pw::Route {
+            logged_route([](pw::Connection&, pw::Request& request) {
+                if (request.method == "GET") return usage_page(200);
+                if (request.method != "POST") return usage_page(405);
+
+                auto content_type = request.headers.find("Content-Type");
+                if (content_type == request.headers.end() ||
+                    !pw::string::to_lower_copy(content_type->second).starts_with("application/x-www-form-urlencoded")) {
+                    return usage_page(400, "<p>Expected a form submission.</p>");
+                }
+                std::string body = request.body_to_string();
+                if (body.size() > 256) return usage_page(400, "<p>Invalid form submission.</p>");
+
+                pw::QueryParameters form(body);
+                auto api_key = form->find("api_key");
+                if (api_key == form->end()) return usage_page(400, "<p>API key is required.</p>");
+                auto user = get_user_by_api_key(api_key->second);
+                if (!user) return usage_page(401, "<p>Invalid API key.</p>");
+
+                auto time = std::chrono::system_clock::now();
+                auto usage = get_user_usage(user->id, time);
+                if (!usage) return usage_page(500);
+                return usage_page(200, usage_details(*user, *usage, time));
+            }),
+        });
 
     server.route("/chat/completions",
         pw::Route {
@@ -217,15 +297,15 @@ int main(int argc, char** argv) {
                                 } else {
                                     switch (request_id.error()) {
                                     case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
-                                        send_basic_resp(*channel_locked, 422, std::format("Five-hour limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.five_hour_window_started_at + std::chrono::hours(5)))));
+                                        send_basic_resp(*channel_locked, 422, std::format("Five-hour limit exhausted. Reset at: {}", reset_time_utc(*usage_limits.five_hour_window_started_at + std::chrono::hours(5))));
                                         break;
 
                                     case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
-                                        send_basic_resp(*channel_locked, 422, std::format("Weekly limit exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(*usage_limits.weekly_window_started_at + std::chrono::weeks(1)))));
+                                        send_basic_resp(*channel_locked, 422, std::format("Weekly limit exhausted. Reset at: {}", reset_time_utc(*usage_limits.weekly_window_started_at + std::chrono::weeks(1))));
                                         break;
 
                                     case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
-                                        send_basic_resp(*channel_locked, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", pw::build_date(std::chrono::system_clock::to_time_t(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1))))));
+                                        send_basic_resp(*channel_locked, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", reset_time_utc(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1)))));
                                         break;
 
                                     default:

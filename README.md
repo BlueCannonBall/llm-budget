@@ -40,7 +40,7 @@ The server listens only on `127.0.0.1:8787`.
 
 ## Proxy
 
-The only route is `POST /chat/completions`.
+The proxy route is `POST /chat/completions`.
 
 - Requests must carry `Authorization: Bearer <user API key>`. A missing or
   unrecognized key gets `401`.
@@ -53,6 +53,14 @@ The only route is `POST /chat/completions`.
   `Retry-After` passed through. Responses are capped at 32 MB.
 - While the response streams, token usage is read from the SSE events (or a plain
   JSON body) and priced. The estimate is logged and stored on the request row.
+
+## Browser usage
+
+Open `GET /usage` to enter a user API key. The form submits it with `POST /usage`
+and displays that user's used percentages and UTC reset times. Deploy behind
+HTTPS to protect the key in transit. The key
+is not put in the URL or the response, and the page is marked `no-store`. Users
+must enter their key again on a later visit.
 
 ## Manage users
 
@@ -93,6 +101,7 @@ a dollar, so small requests do not round to zero.
 
 ```sh
 python3 tests/cli.py ./llm-budget
+python3 tests/usage_page.py ./llm-budget  # port 8787 must be free
 ```
 
 The three C++ tests are standalone `main()` programs, built with the same include
