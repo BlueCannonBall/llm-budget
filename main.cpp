@@ -30,6 +30,19 @@ struct EndMessage {};
 
 using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
 
+// A value parameter keeps the channel in the coroutine frame, rather than
+// borrowing it from a capturing coroutine lambda's closure.
+std::generator<std::vector<char>> stream_response_body(std::shared_ptr<Channel<Message>> channel) {
+    for (;;) {
+        Message message = channel->recv();
+        if (std::holds_alternative<BodyMessage>(message)) {
+            co_yield std::move(std::get<BodyMessage>(message));
+        } else {
+            co_return;
+        }
+    }
+}
+
 std::optional<Service> model_to_service(std::string_view model) {
     if (model == "deepseek-v4-pro" || model == "deepseek-flash") {
         return Service {
@@ -45,7 +58,29 @@ void print_cost(std::uint64_t nanodollars, const User& user, request_id_t reques
     std::ostringstream formatted;
     formatted << std::fixed << std::setprecision(9)
               << (double) nanodollars / 1'000'000'000;
-    SPDLOG_INFO("Estimated cost: {} USD (user={} id={}, request={}, service={}, model={})", formatted.str(), user.name, user.id, request_id, service, model);
+    SPDLOG_INFO("Estimated cost: ${} (user={} id={}, request={}, service={}, model={})", formatted.str(), user.name, user.id, request_id, service, model);
+}
+
+void record_request_cost(
+    const std::optional<cost::TokenUsage>& token_usage,
+    const User& user,
+    request_id_t request_id,
+    const Service& service,
+    std::string_view model,
+    std::chrono::system_clock::time_point now) {
+    if (!token_usage) {
+        SPDLOG_WARN("Cost estimate unavailable: Failed to parse usage");
+        return;
+    }
+
+    auto amount = cost::calculate(service.name, model, *token_usage, now);
+    if (!amount) {
+        SPDLOG_WARN("Cost estimate unavailable");
+        return;
+    }
+
+    print_cost(*amount, user, request_id, service.name, model);
+    update_request(request_id, *amount);
 }
 
 pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}) {
@@ -64,6 +99,33 @@ pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::
     return resp;
 }
 
+pw::Response receive_proxy_response(std::shared_ptr<Channel<Message>> channel) {
+    Message message = channel->recv();
+    if (!std::holds_alternative<HeadMessage>(message)) {
+        return make_basic_resp(500);
+    }
+
+    auto head_message = std::get<HeadMessage>(message);
+
+    pw::Headers outbound_resp_headers;
+    auto content_type_it = head_message.headers.find("Content-Type");
+    if (content_type_it != head_message.headers.end()) {
+        outbound_resp_headers["Content-Type"] = content_type_it->second;
+    }
+
+    auto retry_after_it = head_message.headers.find("Retry-After");
+    if (retry_after_it != head_message.headers.end()) {
+        outbound_resp_headers["Retry-After"] = retry_after_it->second;
+    }
+
+    return pw::Response(
+        head_message.status_code,
+        [channel = std::move(channel)]() mutable -> std::generator<std::vector<char>> {
+            return stream_response_body(std::move(channel));
+        },
+        outbound_resp_headers);
+}
+
 template <typename F>
 std::move_only_function<bool(std::vector<char>)> metered_receiver(F func, size_t limit) {
     return [func = std::move(func), limit, received = (size_t) 0](std::vector<char> chunk) mutable -> bool {
@@ -77,6 +139,49 @@ std::move_only_function<bool(std::vector<char>)> metered_receiver(F func, size_t
         func(std::move(chunk));
         return true;
     };
+}
+
+void configure_response_receiver(
+    pw::Response& inbound_resp,
+    const std::weak_ptr<Channel<Message>>& channel,
+    bool& sent_head,
+    pw::SSEParser& sse_parser,
+    SJSON::Parse& json_parser) {
+    inbound_resp.recv_cb = metered_receiver(
+        [&channel, &sent_head, &sse_parser, &json_parser, &inbound_resp, content_type = std::string()](std::vector<char> chunk) mutable -> bool {
+            auto channel_locked = channel.lock();
+            if (!channel_locked) {
+                return false;
+            }
+
+            if (!sent_head) {
+                auto content_type_it = inbound_resp.headers.find("Content-Type");
+                if (content_type_it != inbound_resp.headers.end()) {
+                    content_type = pw::string::to_lower_copy(content_type_it->second);
+                }
+
+                channel_locked->send(HeadMessage {
+                    inbound_resp.status_code,
+                    inbound_resp.headers,
+                });
+                sent_head = true;
+            }
+
+            bool ret = true;
+            if (content_type.contains("application/json")) {
+                try {
+                    json_parser.recv(std::string(chunk.begin(), chunk.end()));
+                } catch (const SJSON::sjson_parse_error& e) {
+                    ret = false;
+                }
+            } else if (content_type.contains("text/event-stream")) {
+                ret = sse_parser(chunk);
+            }
+
+            channel_locked->send(std::move(chunk));
+            return ret;
+        },
+        32'000'000);
 }
 
 template <typename F>
@@ -339,20 +444,7 @@ int main(int argc, char** argv) {
                             }
 
                             if (auto usage_it = message.find("usage"); usage_it != message.end() && usage_it->second.is_object()) {
-                                std::optional<cost::TokenUsage> token_usage = cost::from_chat_completions_usage(usage_it->second.object());
-                                if (!token_usage) {
-                                    SPDLOG_WARN("Cost estimate unavailable: Failed to parse usage");
-                                    return true;
-                                }
-
-                                auto amount = cost::calculate(service.name, model, *token_usage, now);
-                                if (!amount) {
-                                    SPDLOG_WARN("Cost estimate unavailable");
-                                    return true;
-                                }
-
-                                print_cost(*amount, user, request_id, service.name, model);
-                                update_request(request_id, *amount);
+                                record_request_cost(cost::from_chat_completions_usage(usage_it->second.object()), user, request_id, service, model, now);
                             }
 
                             return true;
@@ -364,50 +456,11 @@ int main(int argc, char** argv) {
                                 SPDLOG_WARN("Cost estimate unavailable");
                                 return;
                             }
-
-                            std::optional<cost::TokenUsage> token_usage = cost::from_chat_completions_usage(usage.object());
-                            if (!token_usage) {
-                                SPDLOG_WARN("Cost estimate unavailable: Failed to parse usage");
-                                return;
-                            }
-
-                            auto amount = cost::calculate(service.name, model, *token_usage, now);
-                            if (!amount) {
-                                SPDLOG_WARN("Cost estimate unavailable");
-                                return;
-                            }
-
-                            print_cost(*amount, user, request_id, service.name, model);
-                            update_request(request_id, *amount);
+                            record_request_cost(cost::from_chat_completions_usage(usage.object()), user, request_id, service, model, now);
                         });
 
                         pw::Response inbound_resp;
-                        inbound_resp.recv_cb = metered_receiver([&channel, &sent_head, &sse_parser, &json_parser, &inbound_resp, content_type = std::string()](std::vector<char> chunk) mutable -> bool {
-                            auto channel_locked = channel.lock();
-                            if (!channel_locked) return false;
-
-                            if (!sent_head) {
-                                if (auto content_type_it = inbound_resp.headers.find("Content-Type"); content_type_it != inbound_resp.headers.end()) {
-                                    content_type = pw::string::to_lower_copy(content_type_it->second);
-                                }
-                                channel_locked->send(HeadMessage {inbound_resp.status_code, inbound_resp.headers});
-                                sent_head = true;
-                            }
-
-                            bool ret = true;
-                            if (content_type.contains("application/json")) {
-                                try {
-                                    json_parser.recv(std::string(chunk.begin(), chunk.end()));
-                                } catch (const SJSON::sjson_parse_error& e) {
-                                    ret = false;
-                                }
-                            } else if (content_type.contains("text/event-stream")) {
-                                ret = sse_parser(chunk);
-                            }
-                            channel_locked->send(std::move(chunk));
-                            return ret;
-                        },
-                            32'000'000);
+                        configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
                         if (pn::Status result = pw::fetch("POST", service.chat_completions_base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
@@ -434,32 +487,7 @@ int main(int argc, char** argv) {
                 },
                     true);
 
-                Message message = channel->recv();
-                if (std::holds_alternative<HeadMessage>(message)) {
-                    auto head_message = std::get<HeadMessage>(message);
-
-                    pw::Headers outbound_resp_headers;
-                    if (auto content_type_it = head_message.headers.find("Content-Type"); content_type_it != head_message.headers.end()) {
-                        outbound_resp_headers["Content-Type"] = content_type_it->second;
-                    }
-                    if (auto retry_after_it = head_message.headers.find("Retry-After"); retry_after_it != head_message.headers.end()) {
-                        outbound_resp_headers["Retry-After"] = retry_after_it->second;
-                    }
-
-                    return pw::Response(head_message.status_code, [channel = std::move(channel)]() -> std::generator<std::vector<char>> {
-                        for (;;) {
-                            Message message = channel->recv();
-                            if (std::holds_alternative<BodyMessage>(message)) {
-                                co_yield std::move(std::get<BodyMessage>(message));
-                            } else {
-                                co_return;
-                            }
-                        }
-                    },
-                        outbound_resp_headers);
-                } else {
-                    return make_basic_resp(500);
-                }
+                return receive_proxy_response(std::move(channel));
             }),
         });
 
@@ -572,19 +600,8 @@ int main(int argc, char** argv) {
                             for (const auto& [field, value] : usage_it->second.object()) {
                                 current_usage[field] = value;
                             }
-                            auto token_usage = cost::from_anthropic_usage(current_usage);
-                            if (!token_usage) {
-                                SPDLOG_WARN("Cost estimate unavailable: Failed to parse usage");
-                                return true;
-                            }
+                            record_request_cost(cost::from_anthropic_usage(current_usage), user, request_id, service, model, now);
 
-                            auto amount = cost::calculate(service.name, model, *token_usage, now);
-                            if (!amount) {
-                                SPDLOG_WARN("Cost estimate unavailable");
-                                return true;
-                            }
-                            print_cost(*amount, user, request_id, service.name, model);
-                            update_request(request_id, *amount);
                             return true;
                         });
 
@@ -594,50 +611,11 @@ int main(int argc, char** argv) {
                                 SPDLOG_WARN("Cost estimate unavailable");
                                 return;
                             }
-
-                            std::optional<cost::TokenUsage> token_usage = cost::from_anthropic_usage(usage.object());
-                            if (!token_usage) {
-                                SPDLOG_WARN("Cost estimate unavailable: Failed to parse usage");
-                                return;
-                            }
-
-                            auto amount = cost::calculate(service.name, model, *token_usage, now);
-                            if (!amount) {
-                                SPDLOG_WARN("Cost estimate unavailable");
-                                return;
-                            }
-
-                            print_cost(*amount, user, request_id, service.name, model);
-                            update_request(request_id, *amount);
+                            record_request_cost(cost::from_anthropic_usage(usage.object()), user, request_id, service, model, now);
                         });
 
                         pw::Response inbound_resp;
-                        inbound_resp.recv_cb = metered_receiver([&channel, &sent_head, &sse_parser, &json_parser, &inbound_resp, content_type = std::string()](std::vector<char> chunk) mutable -> bool {
-                            auto channel_locked = channel.lock();
-                            if (!channel_locked) return false;
-
-                            if (!sent_head) {
-                                if (auto content_type_it = inbound_resp.headers.find("Content-Type"); content_type_it != inbound_resp.headers.end()) {
-                                    content_type = pw::string::to_lower_copy(content_type_it->second);
-                                }
-                                channel_locked->send(HeadMessage {inbound_resp.status_code, inbound_resp.headers});
-                                sent_head = true;
-                            }
-
-                            bool ret = true;
-                            if (content_type.contains("application/json")) {
-                                try {
-                                    json_parser.recv(std::string(chunk.begin(), chunk.end()));
-                                } catch (const SJSON::sjson_parse_error& e) {
-                                    ret = false;
-                                }
-                            } else if (content_type.contains("text/event-stream")) {
-                                ret = sse_parser(chunk);
-                            }
-                            channel_locked->send(std::move(chunk));
-                            return ret;
-                        },
-                            32'000'000);
+                        configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
                         if (pn::Status result = pw::fetch("POST", service.anthropic_messages_base_url + "/v1/messages", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
@@ -664,32 +642,7 @@ int main(int argc, char** argv) {
                 },
                     true);
 
-                Message message = channel->recv();
-                if (std::holds_alternative<HeadMessage>(message)) {
-                    auto head_message = std::get<HeadMessage>(message);
-
-                    pw::Headers outbound_resp_headers;
-                    if (auto content_type_it = head_message.headers.find("Content-Type"); content_type_it != head_message.headers.end()) {
-                        outbound_resp_headers["Content-Type"] = content_type_it->second;
-                    }
-                    if (auto retry_after_it = head_message.headers.find("Retry-After"); retry_after_it != head_message.headers.end()) {
-                        outbound_resp_headers["Retry-After"] = retry_after_it->second;
-                    }
-
-                    return pw::Response(head_message.status_code, [channel = std::move(channel)]() -> std::generator<std::vector<char>> {
-                        for (;;) {
-                            Message message = channel->recv();
-                            if (std::holds_alternative<BodyMessage>(message)) {
-                                co_yield std::move(std::get<BodyMessage>(message));
-                            } else {
-                                co_return;
-                            }
-                        }
-                    },
-                        outbound_resp_headers);
-                } else {
-                    return make_basic_resp(500);
-                }
+                return receive_proxy_response(std::move(channel));
             }),
         });
 

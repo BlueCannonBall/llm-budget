@@ -17,6 +17,7 @@ json_callbacks = re.findall(r'SJSON::Parse json_parser;\n                       
 assert len(sse_callbacks) == len(json_callbacks) == 2
 service_definition = re.search(r"struct Service \{.*?\n\};", source, re.S).group()
 service_lookup = re.search(r"std::optional<Service> model_to_service\(.*?\n\}", source, re.S).group()
+record_cost_definition = re.search(r"void record_request_cost\(.*?\n\}", source, re.S).group()
 metadata_block = re.search(r'if \(service->name == "deepseek"\) \{\n                    auto& metadata.*?\n                \}', source, re.S).group()
 upstream_urls = re.findall(r'pw::fetch\("POST", (service\.\w+ \+ "[^"]+")', source)
 assert len(upstream_urls) == 2
@@ -30,12 +31,14 @@ cpp = r'''
 #include <vector>
 #define SPDLOG_WARN(...) ((void)0)
 struct User { std::string name; };
+using request_id_t = std::int64_t;
 std::vector<std::uint64_t> recorded;
 void update_request(std::uint64_t, std::uint64_t amount) { recorded.push_back(amount); }
 void print_cost(std::uint64_t, const User&, std::uint64_t, std::string_view, std::string_view) {}
 int make_basic_resp(int status, const std::string&) { return status; }
 '''
 cpp += service_definition + "\n" + service_lookup + "\n"
+cpp += record_cost_definition + "\n"
 cpp += "int isolate_metadata(SJSON::JSObject& req_body) {\n"
 cpp += 'std::optional<User> user = User {"alice"}; auto service = model_to_service("deepseek-v4-pro");\n'
 cpp += metadata_block + "\nreturn 200;\n}\n"
