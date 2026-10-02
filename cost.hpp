@@ -10,29 +10,31 @@
 #include <string_view>
 
 namespace cost {
-    // Nano-units avoid rounding small request costs while accumulating them.
-    // For USD, 1'000'000'000 nano_units = $1.
-    struct Money {
-        std::string_view currency;
-        std::uint64_t nano_units;
+    // Validated counts, independent of the API's JSON field names.
+    // Output includes reasoning tokens; do not count them separately.
+    struct TokenUsage {
+        std::uint64_t cache_hit_tokens;
+        std::uint64_t cache_miss_tokens;
+        std::uint64_t output_tokens;
     };
 
     namespace detail {
-        struct Prices {
-            std::uint64_t cache_hit;
-            std::uint64_t cache_miss;
-            std::uint64_t completion;
-        };
-
         inline std::optional<std::uint64_t> token_count(const SJSON::JSObject& usage, std::string_view field) {
             auto it = usage.find(std::string(field));
-            if (it == usage.end() || !it->second.is_number()) return std::nullopt;
-            double count = it->second.number();
+            if (it == usage.end()) return 0;
+            if (!it->second.is_number()) return std::nullopt;
+            auto count = it->second.number();
             if (!std::isfinite(count) || count < 0 || count > 9007199254740991.0 || std::trunc(count) != count) {
                 return std::nullopt;
             }
             return static_cast<std::uint64_t>(count);
         }
+
+        struct Prices {
+            std::uint64_t cache_hit;
+            std::uint64_t cache_miss;
+            std::uint64_t completion;
+        };
 
         // The published rates apply to these models from their launch/pricing-change dates.
         // Sources: https://api-docs.deepseek.com/quick_start/pricing/
@@ -77,17 +79,10 @@ namespace cost {
                 && ((hour_utc >= 1 && hour_utc < 4) || (hour_utc >= 6 && hour_utc < 10));
         }
 
-        inline std::optional<Money> deepseek(std::string_view model, const SJSON::JSObject& usage, std::chrono::sys_seconds at) {
+        inline std::optional<std::uint64_t> deepseek(std::string_view model, const TokenUsage& usage, std::chrono::sys_seconds at) {
             auto prices = deepseek_off_peak_prices(model, at);
             auto peak = deepseek_peak(at);
-            auto hits = token_count(usage, "prompt_cache_hit_tokens");
-            auto misses = token_count(usage, "prompt_cache_miss_tokens");
-            auto completions = token_count(usage, "completion_tokens");
-            auto prompts = token_count(usage, "prompt_tokens");
-            if (!prices || !peak || !hits || !misses || !completions || !prompts
-                || *hits > *prompts || *misses != *prompts - *hits) {
-                return std::nullopt;
-            }
+            if (!prices || !peak) return std::nullopt;
 
             std::uint64_t total = 0;
             auto add_tokens = [&total](std::uint64_t tokens, std::uint64_t rate) {
@@ -95,23 +90,59 @@ namespace cost {
                 total += tokens * rate;
                 return true;
             };
-            if (!add_tokens(*hits, prices->cache_hit)
-                || !add_tokens(*misses, prices->cache_miss)
-                || !add_tokens(*completions, prices->completion)) {
+            if (!add_tokens(usage.cache_hit_tokens, prices->cache_hit)
+                || !add_tokens(usage.cache_miss_tokens, prices->cache_miss)
+                || !add_tokens(usage.output_tokens, prices->completion)) {
                 return std::nullopt;
             }
             if (*peak) {
                 if (total > std::numeric_limits<std::uint64_t>::max() / 2) return std::nullopt;
                 total *= 2;
             }
-            return Money {"USD", total};
+            return total;
         }
     } // namespace detail
 
+    // Convert only this snapshot's reported counts; missing fields become zero.
+    // DeepSeek Chat Completions: prompt_tokens includes both cache buckets.
+    inline std::optional<TokenUsage> from_chat_completions_usage(const SJSON::JSObject& usage) {
+        auto input = detail::token_count(usage, "prompt_tokens");
+        auto hits = detail::token_count(usage, "prompt_cache_hit_tokens");
+        auto misses = detail::token_count(usage, "prompt_cache_miss_tokens");
+        auto output = detail::token_count(usage, "completion_tokens");
+        if (!input || !hits || !misses || !output) return std::nullopt;
+        if (usage.contains("prompt_tokens")) {
+            if (usage.contains("prompt_cache_hit_tokens") && *hits > *input) return std::nullopt;
+            if (usage.contains("prompt_cache_miss_tokens") && *misses > *input) return std::nullopt;
+            if (usage.contains("prompt_cache_hit_tokens") && usage.contains("prompt_cache_miss_tokens")
+                && *misses != *input - *hits) {
+                return std::nullopt;
+            }
+        }
+        return TokenUsage {*hits, *misses, *output};
+    }
+
+    // Accepts raw usage from any lifecycle point; missing fields become zero.
+    // No merging or accumulation is performed, and delta counts remain cumulative.
+    // Messages input_tokens excludes both cache buckets. For DeepSeek pricing,
+    // newly cached input belongs in the ordinary cache-miss bucket.
+    inline std::optional<TokenUsage> from_anthropic_usage(const SJSON::JSObject& usage) {
+        auto input = detail::token_count(usage, "input_tokens");
+        auto hits = detail::token_count(usage, "cache_read_input_tokens");
+        auto created = detail::token_count(usage, "cache_creation_input_tokens");
+        auto output = detail::token_count(usage, "output_tokens");
+        if (!input || !hits || !created || !output
+            || *created > std::numeric_limits<std::uint64_t>::max() - *input) {
+            return std::nullopt;
+        }
+        return TokenUsage {*hits, *input + *created, *output};
+    }
+
     // Time is UTC. Add other services in this dispatch without changing callers.
+    // Returns USD nanodollars: 1'000'000'000 = $1. Zero is a valid cost.
     // Empty result means the model, usage, or pricing period cannot be priced reliably.
-    inline std::optional<Money> calculate(std::string_view service, std::string_view model,
-        const SJSON::JSObject& usage, std::chrono::system_clock::time_point at = std::chrono::system_clock::now()) {
+    inline std::optional<std::uint64_t> calculate(std::string_view service, std::string_view model,
+        const TokenUsage& usage, std::chrono::system_clock::time_point at = std::chrono::system_clock::now()) {
         if (service == "deepseek") {
             return detail::deepseek(model, usage, std::chrono::floor<std::chrono::seconds>(at));
         }
