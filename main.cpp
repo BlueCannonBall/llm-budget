@@ -30,19 +30,6 @@ struct EndMessage {};
 
 using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
 
-// A value parameter keeps the channel in the coroutine frame, rather than
-// borrowing it from a capturing coroutine lambda's closure.
-std::generator<std::vector<char>> stream_response_body(std::shared_ptr<Channel<Message>> channel) {
-    for (;;) {
-        Message message = channel->recv();
-        if (std::holds_alternative<BodyMessage>(message)) {
-            co_yield std::move(std::get<BodyMessage>(message));
-        } else {
-            co_return;
-        }
-    }
-}
-
 std::optional<Service> model_to_service(std::string_view model) {
     if (model == "deepseek-v4-pro" || model == "deepseek-flash") {
         return Service {
@@ -123,8 +110,15 @@ pw::Response receive_proxy_response(std::shared_ptr<Channel<Message>> channel) {
 
     return pw::Response(
         head_message.status_code,
-        [channel = std::move(channel)]() mutable -> std::generator<std::vector<char>> {
-            return stream_response_body(std::move(channel));
+        [channel = std::move(channel)](this auto) -> std::generator<std::vector<char>> {
+            for (;;) {
+                Message message = channel->recv();
+                if (std::holds_alternative<BodyMessage>(message)) {
+                    co_yield std::move(std::get<BodyMessage>(message));
+                } else {
+                    co_return;
+                }
+            }
         },
         outbound_resp_headers);
 }
