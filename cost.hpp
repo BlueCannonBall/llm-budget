@@ -16,7 +16,18 @@ namespace cost {
         std::uint64_t cache_hit_tokens;
         std::uint64_t cache_miss_tokens;
         std::uint64_t output_tokens;
+        // Tokens written to cache, a subset of cache_miss_tokens that pricing
+        // charges at the miss rate. Chat Completions reports no separate count.
+        std::uint64_t cache_creation_tokens;
     };
+
+    // Share of input tokens served from cache: cache reads over total input
+    // (reads, uncached input, and cache writes). Zero when no input is reported.
+    inline double cache_hit_rate(const TokenUsage& usage) {
+        double reads = static_cast<double>(usage.cache_hit_tokens);
+        double total = reads + static_cast<double>(usage.cache_miss_tokens);
+        return total > 0 ? reads / total : 0.0;
+    }
 
     namespace detail {
         inline std::optional<std::uint64_t> token_count(const SJSON::JSObject& usage, std::string_view field) {
@@ -104,7 +115,8 @@ namespace cost {
     } // namespace detail
 
     // Convert only this snapshot's reported counts; missing fields become zero.
-    // DeepSeek Chat Completions: prompt_tokens includes both cache buckets.
+    // DeepSeek Chat Completions: prompt_tokens includes both cache buckets, and
+    // there is no separate cache-write count.
     inline std::optional<TokenUsage> from_chat_completions_usage(const SJSON::JSObject& usage) {
         auto input = detail::token_count(usage, "prompt_tokens");
         auto hits = detail::token_count(usage, "prompt_cache_hit_tokens");
@@ -119,13 +131,14 @@ namespace cost {
                 return std::nullopt;
             }
         }
-        return TokenUsage {*hits, *misses, *output};
+        return TokenUsage {*hits, *misses, *output, 0};
     }
 
     // Accepts raw usage from any lifecycle point; missing fields become zero.
     // No merging or accumulation is performed, and delta counts remain cumulative.
     // Messages input_tokens excludes both cache buckets. For DeepSeek pricing,
-    // newly cached input belongs in the ordinary cache-miss bucket.
+    // newly cached input belongs in the ordinary cache-miss bucket; the write
+    // count is kept alongside for reporting.
     inline std::optional<TokenUsage> from_anthropic_usage(const SJSON::JSObject& usage) {
         auto input = detail::token_count(usage, "input_tokens");
         auto hits = detail::token_count(usage, "cache_read_input_tokens");
@@ -135,7 +148,7 @@ namespace cost {
             || *created > std::numeric_limits<std::uint64_t>::max() - *input) {
             return std::nullopt;
         }
-        return TokenUsage {*hits, *input + *created, *output};
+        return TokenUsage {*hits, *input + *created, *output, *created};
     }
 
     // Time is UTC. Add other services in this dispatch without changing callers.

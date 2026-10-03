@@ -54,11 +54,14 @@ std::optional<Service> model_to_service(std::string_view model) {
     return std::nullopt;
 }
 
-void print_cost(std::uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model) {
+void print_cost(std::uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model, const cost::TokenUsage& token_usage) {
     std::ostringstream formatted;
     formatted << std::fixed << std::setprecision(9)
               << (double) nanodollars / 1'000'000'000;
-    SPDLOG_INFO("Estimated cost: ${} (user={} id={}, request={}, service={}, model={})", formatted.str(), user.name, user.id, request_id, service, model);
+    // cache_miss_tokens prices cache writes at the miss rate; subtract them to
+    // report the raw uncached input count.
+    std::uint64_t input_tokens = token_usage.cache_miss_tokens - token_usage.cache_creation_tokens;
+    SPDLOG_INFO("Estimated cost: ${} (user={} id={}, request={}, service={}, model={}) tokens: input={} cache_creation={} cache_read={} output={} cache_hit_rate={:.2f}%", formatted.str(), user.name, user.id, request_id, service, model, input_tokens, token_usage.cache_creation_tokens, token_usage.cache_hit_tokens, token_usage.output_tokens, cost::cache_hit_rate(token_usage) * 100.0);
 }
 
 void record_request_cost(
@@ -79,7 +82,7 @@ void record_request_cost(
         return;
     }
 
-    print_cost(*amount, user, request_id, service.name, model);
+    print_cost(*amount, user, request_id, service.name, model, *token_usage);
     update_request(request_id, *amount);
 }
 

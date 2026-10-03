@@ -33,8 +33,9 @@ cpp = r'''
 struct User { std::string name; };
 using request_id_t = std::int64_t;
 std::vector<std::uint64_t> recorded;
+std::vector<cost::TokenUsage> printed;
 void update_request(std::uint64_t, std::uint64_t amount) { recorded.push_back(amount); }
-void print_cost(std::uint64_t, const User&, std::uint64_t, std::string_view, std::string_view) {}
+void print_cost(std::uint64_t, const User&, std::uint64_t, std::string_view, std::string_view, const cost::TokenUsage& usage) { printed.push_back(usage); }
 int make_basic_resp(int status, const std::string&) { return status; }
 '''
 cpp += service_definition + "\n" + service_lookup + "\n"
@@ -110,6 +111,7 @@ int main() {
     for (std::size_t width : {1, 2, 7, 64, 4096}) {
         auto chat_s = chat_sse(chat_stream, width);
         assert(chat_s.size() == 1 && chat_s.back() == 48400);
+        assert(printed.back().cache_hit_tokens == 10 && printed.back().cache_miss_tokens == 25 && printed.back().cache_creation_tokens == 0);
         auto chat_j = chat_json("{\"usage\":" + chat_usage + "}", width);
         assert(chat_j.size() == 1 && chat_j.back() == 48400);
         auto anthropic_j = anthropic_json("{\"usage\":" + anthropic_usage + "}", width);
@@ -125,6 +127,7 @@ int main() {
         auto created = anthropic_sse(start + event("message_delta", R"({"usage":{"cache_creation_input_tokens":5,"output_tokens":16}})")
             + event("message_delta", R"({"usage":{"input_tokens":20}})") + stop, width);
         assert(created.size() == 3 && created[1] == 51700 && created.back() == 48400);
+        assert(printed.back().cache_hit_tokens == 10 && printed.back().cache_miss_tokens == 25 && printed.back().cache_creation_tokens == 5);
         auto zero_cache = anthropic_sse(start + event("message_delta", R"({"usage":{"cache_read_input_tokens":0,"output_tokens":16}})") + stop, width);
         assert(zero_cache.back() == 48180);
         auto zero_output = anthropic_sse(start + event("message_delta", R"({"usage":{"output_tokens":0}})") + stop, width);
