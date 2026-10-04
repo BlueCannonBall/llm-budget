@@ -30,6 +30,14 @@ struct EndMessage {};
 
 using Message = std::variant<HeadMessage, BodyMessage, EndMessage>;
 
+// Bound upstream inactivity without imposing a total streaming duration.
+const pw::ClientConfig upstream_client_config {
+    .tcp = {
+        .send_timeout = std::chrono::seconds {30},
+        .recv_timeout = std::chrono::seconds {120},
+    },
+};
+
 std::optional<Service> model_to_service(std::string_view model) {
     if (model == "deepseek-v4-pro" || model == "deepseek-flash") {
         return Service {
@@ -198,23 +206,10 @@ auto logged_route(F func) {
     };
 }
 
-std::string reset_time_utc(std::chrono::system_clock::time_point reset_at) {
-    auto seconds = std::chrono::ceil<std::chrono::seconds>(reset_at);
-    return pw::build_date(std::chrono::system_clock::to_time_t(seconds));
-}
-
-std::string window_reset_time_utc(std::optional<std::chrono::system_clock::time_point> started_at,
-    std::chrono::system_clock::duration duration,
-    std::chrono::system_clock::time_point time,
-    uint64_t limit_nanodollars) {
-    if (limit_nanodollars == 0) return "No automatic reset";
-    if (!started_at || time >= *started_at + duration) return "Not scheduled";
-    return reset_time_utc(*started_at + duration);
-}
-
 pw::Response usage_page(uint16_t status_code, const std::string& details = {}) {
     std::string html = R"(<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LLM Budget usage</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css" integrity="sha384-NZhm4G1I7BpEGdjDKnzEfy3d78xvy7ECKUwwnKTYi036z42IyF056PbHfpQLIYgL" crossorigin="anonymous">
+<script src="usage.js" defer></script>
 <main><h1>LLM Budget usage</h1><form method="post" action="usage" autocomplete="off">
 <label for="api-key">API key</label> <input id="api-key" name="api_key" type="password" maxlength="64" required autocomplete="off">
 <button type="submit">Show usage</button></form>)";
@@ -224,7 +219,7 @@ pw::Response usage_page(uint16_t status_code, const std::string& details = {}) {
                                                {"Content-Type", "text/html; charset=utf-8"},
                                                {"Cache-Control", "no-store"},
                                                {"Referrer-Policy", "no-referrer"},
-                                               {"Content-Security-Policy", "default-src 'none'; style-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
+                                               {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
                                                {"X-Content-Type-Options", "nosniff"},
                                            });
 }
@@ -234,16 +229,22 @@ std::string usage_details(const User& user, const UserUsage& usage, std::chrono:
         std::ostringstream result;
         result << "<tr><th scope=\"row\">" << name << "</th><td>";
         if (limit == 0) {
-            result << "n/a";
+            result << "n/a</td><td>No automatic reset";
         } else {
-            result << std::fixed << std::setprecision(2) << (long double) cost * 100 / limit << '%';
+            result << std::fixed << std::setprecision(2) << (long double) cost * 100 / limit << "%</td><td>";
+            if (!started_at || time >= *started_at + duration) {
+                result << "Not scheduled";
+            } else {
+                auto reset_at = std::chrono::ceil<std::chrono::seconds>(*started_at + duration);
+                result << std::format("<time datetime=\"{:%FT%TZ}\">{:%F %T} UTC</time>", reset_at, reset_at);
+            }
         }
-        result << "</td><td>" << window_reset_time_utc(started_at, duration, time, limit) << "</td></tr>";
+        result << "</td></tr>";
         return result.str();
     };
 
     std::string details = "<h2>Usage for " + pw::xml_escape(user.name) + "</h2>";
-    details += "<table><thead><tr><th>Window</th><th>Used</th><th>Reset (UTC)</th></tr></thead><tbody>";
+    details += "<table><thead><tr><th>Window</th><th>Used</th><th id=\"reset-timezone\">Reset (UTC)</th></tr></thead><tbody>";
     details += row("Five-hour", usage.five_hour_cost_nanodollars, usage.limits.five_hour_limit_nanodollars, usage.limits.five_hour_window_started_at, std::chrono::hours {5});
     details += row("Weekly", usage.weekly_cost_nanodollars, usage.limits.weekly_limit_nanodollars, usage.limits.weekly_window_started_at, std::chrono::weeks {1});
     details += "</tbody></table>";
@@ -275,26 +276,41 @@ void send_basic_resp(Channel<Message>& channel, uint16_t status_code, const std:
 void send_usage_error_resp(Channel<Message>& channel, BeginRequestError error, const UsageLimits& usage_limits) {
     if (error == BEGIN_REQUEST_ERROR_USER_NOT_FOUND) {
         send_basic_resp(channel, 500);
-    } else if (!usage_limits.five_hour_limit_nanodollars || !usage_limits.weekly_limit_nanodollars) {
-        send_basic_resp(channel, 403);
-    } else {
-        switch (error) {
-        case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
-            send_basic_resp(channel, 422, std::format("Five-hour limit exhausted. Reset at: {}", reset_time_utc(*usage_limits.five_hour_window_started_at + std::chrono::hours(5))));
-            break;
-
-        case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
-            send_basic_resp(channel, 422, std::format("Weekly limit exhausted. Reset at: {}", reset_time_utc(*usage_limits.weekly_window_started_at + std::chrono::weeks(1))));
-            break;
-
-        case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
-            send_basic_resp(channel, 422, std::format("Both weekly and five-hour limits exhausted. Reset at: {}", reset_time_utc(std::max(*usage_limits.five_hour_window_started_at + std::chrono::hours(5), *usage_limits.weekly_window_started_at + std::chrono::weeks(1)))));
-            break;
-
-        default:
-            throw std::invalid_argument("Invalid BeginRequestError");
-        }
+        return;
     }
+    if (!usage_limits.five_hour_limit_nanodollars || !usage_limits.weekly_limit_nanodollars) {
+        send_basic_resp(channel, 403);
+        return;
+    }
+
+    std::string_view exhausted_limits;
+    std::chrono::system_clock::time_point reset_at;
+    switch (error) {
+    case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
+        exhausted_limits = "Five-hour";
+        reset_at = *usage_limits.five_hour_window_started_at + std::chrono::hours(5);
+        break;
+
+    case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
+        exhausted_limits = "Weekly";
+        reset_at = *usage_limits.weekly_window_started_at + std::chrono::weeks(1);
+        break;
+
+    case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
+        exhausted_limits = "Both weekly and five-hour";
+        reset_at = std::max(
+            *usage_limits.five_hour_window_started_at + std::chrono::hours(5),
+            *usage_limits.weekly_window_started_at + std::chrono::weeks(1));
+        break;
+
+    default:
+        throw std::invalid_argument("Invalid BeginRequestError");
+    }
+
+    auto retry_delay = std::chrono::ceil<std::chrono::seconds>(reset_at - std::chrono::system_clock::now());
+    auto retry_after_seconds = std::max<std::int64_t>(1, retry_delay.count());
+    auto reset_at_seconds = std::chrono::ceil<std::chrono::seconds>(reset_at);
+    send_basic_resp(channel, 429, std::format("{} limit exhausted. Reset at: {}", exhausted_limits, pw::build_date(std::chrono::system_clock::to_time_t(reset_at_seconds))), {{"Retry-After", std::to_string(retry_after_seconds)}});
 }
 
 int main(int argc, char** argv) {
@@ -328,11 +344,36 @@ int main(int argc, char** argv) {
         return make_basic_resp(status_code, std::string(what));
     };
 
+    server.route("/usage.js",
+        pw::Route {
+            logged_route([](pw::Connection&, pw::Request& request) {
+                if (request.method != "GET") return make_basic_resp(405, {{"Allow", "GET"}});
+                return pw::Response(200, R"(const formatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "long"
+});
+for (const timestamp of document.querySelectorAll("time[datetime]")) {
+    timestamp.textContent = formatter.format(new Date(timestamp.dateTime));
+}
+const heading = document.getElementById("reset-timezone");
+if (heading) heading.textContent = `Reset (${formatter.resolvedOptions().timeZone})`;
+)",
+                    {
+                        {"Content-Type", "text/javascript; charset=utf-8"},
+                        {"X-Content-Type-Options", "nosniff"},
+                    });
+            }),
+        });
+
     server.route("/usage",
         pw::Route {
             logged_route([](pw::Connection&, pw::Request& request) {
                 if (request.method == "GET") return usage_page(200);
-                if (request.method != "POST") return usage_page(405);
+                if (request.method != "POST") {
+                    auto resp = usage_page(405);
+                    resp.headers["Allow"] = "GET, POST";
+                    return resp;
+                }
 
                 auto content_type = request.headers.find("Content-Type");
                 if (content_type == request.headers.end() ||
@@ -458,7 +499,7 @@ int main(int argc, char** argv) {
 
                         pw::Response inbound_resp;
                         configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
-                        if (pn::Status result = pw::fetch("POST", service.chat_completions_base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
+                        if (pn::Status result = pw::fetch("POST", service.chat_completions_base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
                                 channel_locked->send(EndMessage {});
@@ -613,7 +654,7 @@ int main(int argc, char** argv) {
 
                         pw::Response inbound_resp;
                         configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
-                        if (pn::Status result = pw::fetch("POST", service.anthropic_messages_base_url + "/v1/messages", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers); !result) {
+                        if (pn::Status result = pw::fetch("POST", service.anthropic_messages_base_url + "/v1/messages", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
                                 channel_locked->send(EndMessage {});

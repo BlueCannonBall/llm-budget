@@ -81,6 +81,10 @@ implemented.
   not forwarded.
 - The upstream response is streamed back as received, with `Content-Type` and
   `Retry-After` passed through. Responses are capped at 32,000,000 bytes.
+- Both upstream fetches use a 120-second socket read timeout and a 30-second
+  send timeout. The read timeout bounds inactivity, not total stream duration.
+  A fetch failure returns `502` if response headers have not been sent; otherwise
+  it closes the stream. The request is recorded as interrupted.
 - While the response streams, token usage is read from the SSE events (or a plain
   JSON body) and priced. The estimate is logged and stored on the request row.
 - The proxy does not add `stream_options.include_usage` for streaming Chat
@@ -94,10 +98,12 @@ rolling lookbacks: they start with an accepted request and restart on the next
 accepted request after expiration. Recorded costs are attributed by request start
 time.
 
-- Exhausting either limit rejects new requests with `422`, including the UTC reset
-  time in the response body.
+- Exhausting either limit rejects new requests with `429`, including the UTC reset
+  time in the response body and a `Retry-After` header in whole seconds, rounded
+  up to the reset (minimum one second). If both limits are exhausted, retry waits
+  for the later reset.
 - Setting either limit to zero blocks requests with `403`; zero does not mean
-  unlimited.
+  unlimited. Disabled budgets have no automatic reset and no `Retry-After`.
 - Active requests are not stopped when they exhaust a budget, and no estimated
   cost is reserved before starting a request. Enforcement uses costs already
   recorded in the database.
@@ -107,10 +113,13 @@ time.
 ## Browser usage
 
 Open `GET /usage` to enter a user API key. The form submits it with `POST /usage`
-and displays that user's used percentages and UTC reset times. Deploy behind
+and displays that user's used percentages and reset times in the browser's
+timezone and locale. The reset column names the timezone; with JavaScript
+disabled, both the heading and timestamps explicitly use UTC. Deploy behind
 HTTPS to protect the key in transit. The key is not put in the URL or the response,
 and the page is marked `no-store`. Users must enter their key again on a later
 visit.
+Other methods return `405` with `Allow: GET, POST`.
 
 ## Manage users
 
@@ -216,6 +225,7 @@ Run the Python tests from the repository root after building the server:
 ```sh
 python3 tests/cli.py ./llm-budget
 python3 tests/usage_page.py ./llm-budget  # port 8787 must be free
+python3 tests/proxy_limits.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_callbacks.py          # invokes g++ with -std=c++23
 python3 tests/usage_graph.py
 ```
@@ -226,6 +236,10 @@ These tests use temporary directories and do not make upstream requests.
 `main.cpp` with stubbed storage. It checks both formats' JSON/SSE accounting,
 fragmented events, cumulative updates, explicit zeros, invalid counts, overflow,
 upstream URLs, and trusted Messages user isolation without making upstream requests.
+
+`proxy_limits.py` exercises both proxy routes against the real local server,
+checking exhausted five-hour, weekly, and combined budgets, reset-based
+`Retry-After`, and disabled (`403`) budgets without contacting the upstream.
 
 `usage_graph.py` checks UTC daily buckets, the rolling cutoff, future-row
 exclusion, shorter history, missing costs, zero-spending days/users, and escaped

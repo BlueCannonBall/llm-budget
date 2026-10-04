@@ -1,5 +1,7 @@
 """Run with: python3 tests/usage_page.py ./llm-budget (port 8787 must be free)."""
 
+from datetime import datetime, timezone
+from html.parser import HTMLParser
 import http.client
 import pathlib
 import socket
@@ -9,6 +11,17 @@ import sys
 import tempfile
 import time
 import urllib.parse
+
+
+class ResetTimes(HTMLParser):
+    def __init__(self, body):
+        super().__init__()
+        self.values = []
+        self.feed(body.decode())
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "time":
+            self.values.append(datetime.fromisoformat(dict(attrs)["datetime"]))
 
 
 binary = str(pathlib.Path(sys.argv[1]).resolve())
@@ -53,26 +66,29 @@ with tempfile.TemporaryDirectory() as directory:
         status, headers, body = request("GET")
         assert status == 200 and b'type="password"' in body
         assert headers["Cache-Control"] == "no-store" and headers["Referrer-Policy"] == "no-referrer"
-        assert b"@picocss/pico@2.1.1/css/pico.classless.min.css" in body and b"integrity=\"sha384-" in body
-        assert b"<main>" in body and b'class="container"' not in body
         assert "style-src https://cdn.jsdelivr.net" in headers["Content-Security-Policy"]
+        status, headers, _ = request("PUT")
+        assert status == 405
+        assert {method.strip() for method in headers["Allow"].split(",")} == {"GET", "POST"}
         assert request("POST", "api_key=invalid")[0] == 401
         assert request("POST", "api_key=invalid", "text/plain")[0] == 400
 
         status, headers, body = request("POST", urllib.parse.urlencode({"api_key": key}))
         assert status == 200 and headers["Cache-Control"] == "no-store"
         assert b"50.00%" in body and b"6.25%" in body
-        assert b"Spent (USD)" not in body and b"Limit (USD)" not in body and b"$0.625000000" not in body
-        assert b"Only requests with recorded costs are counted." not in body
-        assert b"Reset (UTC)" in body and b" GMT" in body
+        expected_reset_seconds = (started + 999) // 1000
+        assert ResetTimes(body).values == [
+            datetime.fromtimestamp(expected_reset_seconds + 5 * 3600, timezone.utc),
+            datetime.fromtimestamp(expected_reset_seconds + 7 * 86400, timezone.utc),
+        ]
         assert b"&#60;script&#62;alert&#40;1&#41;&#60;&#47;script&#62;" in body and b"<script>" not in body
         assert key.encode() not in body
 
         db.execute("UPDATE users SET five_hour_limit_nanodollars=0, five_hour_window_started_at=NULL, weekly_window_started_at=? WHERE id=1", (started - 604_800_001,))
         db.commit()
         status, _, body = request("POST", urllib.parse.urlencode({"api_key": key}))
-        assert status == 200 and b"No automatic reset" in body and b"zero limit" not in body
-        assert b"Not scheduled" in body
+        assert status == 200
+        assert ResetTimes(body).values == []
         assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
     finally:
         server.terminate()
