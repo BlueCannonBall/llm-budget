@@ -49,6 +49,7 @@ std::optional<Service> model_to_service(std::string_view model) {
     return std::nullopt;
 }
 
+// Request cost accounting.
 void print_cost(std::uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model, const cost::TokenUsage& token_usage) {
     std::ostringstream formatted;
     formatted << std::fixed << std::setprecision(9)
@@ -81,6 +82,7 @@ void record_request_cost(
     update_request(request_id, *amount);
 }
 
+// HTTP responses and route error handling.
 pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}) {
     pw::Response resp(status_code, pw::status_code_to_reason_phrase(status_code), std::move(headers));
     if (!resp.headers.count("Content-Type")) {
@@ -97,6 +99,86 @@ pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::
     return resp;
 }
 
+template <typename F>
+auto logged_route(F func) {
+    return [func = std::move(func)](pw::Connection& conn, pw::RequestReceiver& req) -> pw::Response {
+        try {
+            pw::Response resp = func(conn, req);
+            SPDLOG_INFO("Request method={} status={} target={}", req.method, resp.status_code, req.target);
+            return resp;
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("Request method={} status=500 target={} failed: {}", req.method, req.target, e.what());
+            return make_basic_resp(500);
+        } catch (...) {
+            SPDLOG_ERROR("Request method={} status=500 target={} failed with a non-standard exception", req.method, req.target);
+            return make_basic_resp(500);
+        }
+    };
+}
+
+void send_basic_resp(Channel<Message>& channel, uint16_t status_code, pw::Headers headers = {}) {
+    if (!headers.count("Content-Type")) {
+        headers["Content-Type"] = "text/plain";
+    }
+    channel.send(HeadMessage {status_code, std::move(headers)});
+
+    std::string outbound_resp_body;
+    outbound_resp_body = pw::status_code_to_reason_phrase(status_code);
+    channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
+};
+
+void send_basic_resp(Channel<Message>& channel, uint16_t status_code, const std::string& what, pw::Headers headers = {}) {
+    if (!headers.count("Content-Type")) {
+        headers["Content-Type"] = "text/plain";
+    }
+    channel.send(HeadMessage {status_code, std::move(headers)});
+
+    std::string outbound_resp_body;
+    outbound_resp_body = pw::status_code_to_reason_phrase(status_code) + ": " + what;
+    channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
+};
+
+void send_usage_error_resp(Channel<Message>& channel, BeginRequestError error, const UsageLimits& usage_limits) {
+    if (error == BEGIN_REQUEST_ERROR_USER_NOT_FOUND) {
+        send_basic_resp(channel, 500);
+        return;
+    }
+    if (!usage_limits.five_hour_limit_nanodollars || !usage_limits.weekly_limit_nanodollars) {
+        send_basic_resp(channel, 403);
+        return;
+    }
+
+    std::string_view exhausted_limits;
+    std::chrono::system_clock::time_point reset_at;
+    switch (error) {
+    case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
+        exhausted_limits = "Five-hour";
+        reset_at = *usage_limits.five_hour_window_started_at + std::chrono::hours(5);
+        break;
+
+    case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
+        exhausted_limits = "Weekly";
+        reset_at = *usage_limits.weekly_window_started_at + std::chrono::weeks(1);
+        break;
+
+    case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
+        exhausted_limits = "Both weekly and five-hour";
+        reset_at = std::max(
+            *usage_limits.five_hour_window_started_at + std::chrono::hours(5),
+            *usage_limits.weekly_window_started_at + std::chrono::weeks(1));
+        break;
+
+    default:
+        throw std::invalid_argument("Invalid BeginRequestError");
+    }
+
+    auto retry_delay = std::chrono::ceil<std::chrono::seconds>(reset_at - std::chrono::system_clock::now());
+    auto retry_after_seconds = std::max<std::int64_t>(1, retry_delay.count());
+    auto reset_at_seconds = std::chrono::ceil<std::chrono::seconds>(reset_at);
+    send_basic_resp(channel, 429, std::format("{} limit exhausted. Reset at: {}", exhausted_limits, pw::build_date(std::chrono::system_clock::to_time_t(reset_at_seconds))), {{"Retry-After", std::to_string(retry_after_seconds)}});
+}
+
+// Streaming proxy response transport and usage parsing.
 pw::Response receive_proxy_response(std::shared_ptr<Channel<Message>> channel) {
     Message message = channel->recv();
     if (!std::holds_alternative<HeadMessage>(message)) {
@@ -189,23 +271,7 @@ void configure_response_receiver(
         32'000'000);
 }
 
-template <typename F>
-auto logged_route(F func) {
-    return [func = std::move(func)](pw::Connection& conn, pw::RequestReceiver& req) -> pw::Response {
-        try {
-            pw::Response resp = func(conn, req);
-            SPDLOG_INFO("Request method={} status={} target={}", req.method, resp.status_code, req.target);
-            return resp;
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("Request method={} status=500 target={} failed: {}", req.method, req.target, e.what());
-            return make_basic_resp(500);
-        } catch (...) {
-            SPDLOG_ERROR("Request method={} status=500 target={} failed with a non-standard exception", req.method, req.target);
-            return make_basic_resp(500);
-        }
-    };
-}
-
+// Usage-page rendering.
 pw::Response usage_page(uint16_t status_code, const std::string& details = {}) {
     std::string html = R"(<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LLM Budget usage</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css" integrity="sha384-NZhm4G1I7BpEGdjDKnzEfy3d78xvy7ECKUwwnKTYi036z42IyF056PbHfpQLIYgL" crossorigin="anonymous">
@@ -251,68 +317,7 @@ std::string usage_details(const User& user, const UserUsage& usage, std::chrono:
     return details;
 }
 
-void send_basic_resp(Channel<Message>& channel, uint16_t status_code, pw::Headers headers = {}) {
-    if (!headers.count("Content-Type")) {
-        headers["Content-Type"] = "text/plain";
-    }
-    channel.send(HeadMessage {status_code, std::move(headers)});
-
-    std::string outbound_resp_body;
-    outbound_resp_body = pw::status_code_to_reason_phrase(status_code);
-    channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
-};
-
-void send_basic_resp(Channel<Message>& channel, uint16_t status_code, const std::string& what, pw::Headers headers = {}) {
-    if (!headers.count("Content-Type")) {
-        headers["Content-Type"] = "text/plain";
-    }
-    channel.send(HeadMessage {status_code, std::move(headers)});
-
-    std::string outbound_resp_body;
-    outbound_resp_body = pw::status_code_to_reason_phrase(status_code) + ": " + what;
-    channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
-};
-
-void send_usage_error_resp(Channel<Message>& channel, BeginRequestError error, const UsageLimits& usage_limits) {
-    if (error == BEGIN_REQUEST_ERROR_USER_NOT_FOUND) {
-        send_basic_resp(channel, 500);
-        return;
-    }
-    if (!usage_limits.five_hour_limit_nanodollars || !usage_limits.weekly_limit_nanodollars) {
-        send_basic_resp(channel, 403);
-        return;
-    }
-
-    std::string_view exhausted_limits;
-    std::chrono::system_clock::time_point reset_at;
-    switch (error) {
-    case BEGIN_REQUEST_ERROR_FIVE_HOUR_LIMIT:
-        exhausted_limits = "Five-hour";
-        reset_at = *usage_limits.five_hour_window_started_at + std::chrono::hours(5);
-        break;
-
-    case BEGIN_REQUEST_ERROR_WEEKLY_LIMIT:
-        exhausted_limits = "Weekly";
-        reset_at = *usage_limits.weekly_window_started_at + std::chrono::weeks(1);
-        break;
-
-    case BEGIN_REQUEST_ERROR_BOTH_LIMITS:
-        exhausted_limits = "Both weekly and five-hour";
-        reset_at = std::max(
-            *usage_limits.five_hour_window_started_at + std::chrono::hours(5),
-            *usage_limits.weekly_window_started_at + std::chrono::weeks(1));
-        break;
-
-    default:
-        throw std::invalid_argument("Invalid BeginRequestError");
-    }
-
-    auto retry_delay = std::chrono::ceil<std::chrono::seconds>(reset_at - std::chrono::system_clock::now());
-    auto retry_after_seconds = std::max<std::int64_t>(1, retry_delay.count());
-    auto reset_at_seconds = std::chrono::ceil<std::chrono::seconds>(reset_at);
-    send_basic_resp(channel, 429, std::format("{} limit exhausted. Reset at: {}", exhausted_limits, pw::build_date(std::chrono::system_clock::to_time_t(reset_at_seconds))), {{"Retry-After", std::to_string(retry_after_seconds)}});
-}
-
+// Startup, route registration, and server lifecycle.
 int main(int argc, char** argv) {
     (void) pn::init();
     spdlog::cfg::load_env_levels();
