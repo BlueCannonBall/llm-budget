@@ -82,7 +82,7 @@ void record_request_cost(
 }
 
 pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}) {
-    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code), std::move(headers));
+    pw::Response resp(status_code, pw::status_code_to_reason_phrase(status_code), std::move(headers));
     if (!resp.headers.count("Content-Type")) {
         resp.headers["Content-Type"] = "text/plain";
     }
@@ -90,7 +90,7 @@ pw::Response make_basic_resp(uint16_t status_code, pw::Headers headers = {}) {
 }
 
 pw::Response make_basic_resp(uint16_t status_code, const std::string& what, pw::Headers headers = {}) {
-    pw::Response resp(status_code, std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what, std::move(headers));
+    pw::Response resp(status_code, pw::status_code_to_reason_phrase(status_code) + ": " + what, std::move(headers));
     if (!resp.headers.count("Content-Type")) {
         resp.headers["Content-Type"] = "text/plain";
     }
@@ -258,7 +258,7 @@ void send_basic_resp(Channel<Message>& channel, uint16_t status_code, pw::Header
     channel.send(HeadMessage {status_code, std::move(headers)});
 
     std::string outbound_resp_body;
-    outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code);
+    outbound_resp_body = pw::status_code_to_reason_phrase(status_code);
     channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
 };
 
@@ -269,7 +269,7 @@ void send_basic_resp(Channel<Message>& channel, uint16_t status_code, const std:
     channel.send(HeadMessage {status_code, std::move(headers)});
 
     std::string outbound_resp_body;
-    outbound_resp_body = std::to_string(status_code) + ' ' + pw::status_code_to_reason_phrase(status_code) + ": " + what;
+    outbound_resp_body = pw::status_code_to_reason_phrase(status_code) + ": " + what;
     channel.send(BodyMessage(outbound_resp_body.begin(), outbound_resp_body.end()));
 };
 
