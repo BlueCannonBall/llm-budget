@@ -27,8 +27,8 @@ Polybuild is only needed to regenerate the makefiles when source files, include
 dependencies, or `Polybuild.toml` change: run `polybuild generate` before rebuilding.
 Ordinary edits covered by the existing dependency rules only need `make`.
 
-The server reads two files from the current working directory, so run it from the
-directory that holds them:
+The server loads data and page assets from the current working directory, so run
+it from the directory that holds them:
 
 - `keys.json` — the upstream provider keys. It is gitignored and not created for
   you; create it before the first run.
@@ -41,6 +41,10 @@ directory that holds them:
 
 - `llm-budget.db` — the SQLite database. It is created on first use and uses WAL
   mode, so SQLite may also create `llm-budget.db-wal` and `llm-budget.db-shm`.
+
+- `web/` — the usage page's HTML, CSS, and JavaScript. Ship this tracked directory
+  with the executable. The server reads the assets once at startup and fails with
+  an explicit error if a file is missing or the HTML template marker is absent.
 
 ```sh
 ./llm-budget
@@ -118,6 +122,18 @@ timezone and locale. The reset column names the timezone; with JavaScript
 disabled, both the heading and timestamps explicitly use UTC. Deploy behind
 HTTPS to protect the key in transit. The key is not put in the URL or the response,
 and the page is marked `no-store`.
+
+The page uses a compact layout with light/dark colors following the browser's
+preference. After a successful lookup, the API key form collapses into **Key
+settings**, leaving usage and the **Refresh usage** action visible. Expand the
+settings to change or forget a key. Percentages remain accurate above 100%;
+the accompanying progress bars stop at full.
+
+Page markup, styles, and client behavior live in `web/usage.html`,
+`web/usage.css`, and `web/usage.js`; `usage_page.hpp` handles server rendering and
+form authentication. Assets are ordinary runtime files, cached at startup.
+No CDN, compiler extensions, generated asset headers, or JavaScript build step
+are needed. Asset edits require a server restart, but not a C++ rebuild.
 
 With JavaScript enabled, select **Remember on this browser** before submitting
 to save a successfully validated key in this site's `localStorage`. Later visits

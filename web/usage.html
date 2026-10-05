@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Budget usage</title>
+  <link rel="stylesheet" href="usage.css">
+  <script src="usage.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">LLM Budget</p>
+        <h1>Usage</h1>
+      </div>
+      <button id="refresh-usage" type="button" class="secondary" hidden>Refresh usage</button>
+    </header>
+
+    <details id="key-settings" open>
+      <summary id="key-settings-label">API key</summary>
+      <form id="usage-form" method="post" action="usage" autocomplete="off">
+        <label for="api-key">API key</label>
+        <div class="key-entry">
+          <input id="api-key" name="api_key" type="password" required maxlength="64" autocomplete="off" spellcheck="false" autocapitalize="none">
+          <button type="submit">Show usage</button>
+        </div>
+        <div id="remember-controls" hidden>
+          <label class="remember-label" for="remember-key">
+            <input id="remember-key" type="checkbox" aria-describedby="remember-warning">
+            Remember on this browser
+          </label>
+          <p id="remember-warning" class="muted">Stores your API key in this browser. Only enable on a trusted, private device.</p>
+          <button id="forget-key" type="button" class="secondary">Forget key</button>
+        </div>
+      </form>
+    </details>
+
+    <p id="usage-message" role="status"></p>
+    <section id="usage-result" aria-live="polite">
+      <!-- usage-details -->
+    </section>
+  </main>
+</body>
+</html>

@@ -4,6 +4,7 @@ import http.client
 import json
 import math
 import pathlib
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -18,6 +19,7 @@ with socket.socket() as available_port:
     available_port.bind(("127.0.0.1", 8787))
 
 with tempfile.TemporaryDirectory() as directory:
+    shutil.copytree(pathlib.Path(__file__).resolve().parents[1] / "web", pathlib.Path(directory, "web"))
     pathlib.Path(directory, "keys.json").write_text('{"deepseek":"dummy"}')
     created = subprocess.run(
         [binary, "user", "add", "alice", "--five-hour-limit", "1", "--weekly-limit", "1"],

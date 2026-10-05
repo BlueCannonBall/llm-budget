@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 import http.client
 import pathlib
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -30,6 +31,7 @@ with socket.socket() as available_port:
     available_port.bind(("127.0.0.1", 8787))
 
 with tempfile.TemporaryDirectory() as directory:
+    shutil.copytree(pathlib.Path(__file__).resolve().parents[1] / "web", pathlib.Path(directory, "web"))
     pathlib.Path(directory, "keys.json").write_text('{"deepseek":"dummy"}')
     name = "<script>alert(1)</script>"
     created = subprocess.run(
@@ -66,7 +68,6 @@ with tempfile.TemporaryDirectory() as directory:
         status, headers, body = request("GET")
         assert status == 200 and b'type="password"' in body
         assert headers["Cache-Control"] == "no-store" and headers["Referrer-Policy"] == "no-referrer"
-        assert "style-src https://cdn.jsdelivr.net" in headers["Content-Security-Policy"]
         status, headers, _ = request("PUT")
         assert status == 405
         assert {method.strip() for method in headers["Allow"].split(",")} == {"GET", "POST"}

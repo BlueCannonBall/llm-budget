@@ -1,0 +1,291 @@
+:root {
+  color-scheme: light dark;
+  --page: #f5f7fa;
+  --surface: #fff;
+  --text: #202b3b;
+  --muted: #59677a;
+  --border: #d6dde7;
+  --accent: #285dc7;
+  --accent-hover: #204ca4;
+  --focus: #285dc7;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+  background: var(--page);
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #141922;
+    --surface: #1d2531;
+    --text: #edf1f7;
+    --muted: #acb8cb;
+    --border: #3a4658;
+    --accent: #4577d9;
+    --accent-hover: #3767c4;
+    --focus: #9cbdff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  padding: 2rem 1.25rem;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: .85rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+
+h1 {
+  margin: .1rem 0 0;
+  font-size: 1.8rem;
+  line-height: 1.2;
+}
+
+h2 {
+  margin: 0 0 1rem;
+  font-size: 1.2rem;
+  overflow-wrap: anywhere;
+}
+
+button, input {
+  font: inherit;
+}
+
+button {
+  padding: .45rem .85rem;
+  border: 1px solid transparent;
+  border-radius: .4rem;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  font-size: .9rem;
+  font-weight: 600;
+}
+
+button:hover {
+  background: var(--accent-hover);
+}
+
+button.secondary {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+button.secondary:hover {
+  border-color: var(--muted);
+}
+
+button:disabled, input:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+#key-settings {
+  padding: .85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  background: var(--surface);
+}
+
+summary {
+  cursor: pointer;
+  font-size: .95rem;
+  font-weight: 600;
+}
+
+form {
+  margin-top: 1rem;
+}
+
+label {
+  display: block;
+  margin-bottom: .35rem;
+  font-size: .9rem;
+}
+
+.key-entry {
+  display: flex;
+  align-items: stretch;
+  gap: .65rem;
+}
+
+#api-key {
+  width: 100%;
+  min-width: 0;
+  padding: .45rem .65rem;
+  border: 1px solid var(--border);
+  border-radius: .4rem;
+  background: var(--page);
+  color: var(--text);
+}
+
+.key-entry button {
+  flex-shrink: 0;
+}
+
+#remember-controls {
+  margin-top: 1rem;
+}
+
+.remember-label {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin: 0;
+}
+
+#remember-key {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+#remember-warning {
+  max-width: 36rem;
+  margin: .35rem 0 .85rem 1.5rem;
+}
+
+#forget-key {
+  font-size: .8rem;
+  padding: .35rem .65rem;
+}
+
+#usage-message {
+  margin: 1rem 0;
+  color: var(--muted);
+  font-size: .9rem;
+  overflow-wrap: anywhere;
+}
+
+#usage-message:empty {
+  display: none;
+}
+
+#usage-result:not(:empty) {
+  margin-top: 1.5rem;
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-spacing: 0;
+  table-layout: fixed;
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  background: var(--surface);
+  overflow: hidden;
+  font-size: .9rem;
+}
+
+th, td {
+  padding: .85rem 1rem;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+thead th {
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 600;
+}
+
+th:first-child {
+  width: 25%;
+}
+
+th:nth-child(2) {
+  width: 25%;
+}
+
+tbody th, tbody td {
+  border-top: 1px solid var(--border);
+}
+
+time {
+  display: inline-block;
+}
+
+progress {
+  display: block;
+  width: 100%;
+  height: .45rem;
+  margin-top: .4rem;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 480px) {
+  main {
+    padding: 1.25rem 1rem;
+  }
+
+  .page-header {
+    gap: .5rem;
+    margin-bottom: 1rem;
+  }
+
+  #refresh-usage {
+    padding: .4rem .65rem;
+    font-size: .8rem;
+  }
+
+  #key-settings {
+    padding: .75rem;
+  }
+
+  .key-entry {
+    flex-wrap: wrap;
+  }
+
+  .key-entry button {
+    width: 100%;
+  }
+
+  th, td {
+    padding: .7rem .55rem;
+    font-size: .8rem;
+  }
+}
