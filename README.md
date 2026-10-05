@@ -117,8 +117,21 @@ and displays that user's used percentages and reset times in the browser's
 timezone and locale. The reset column names the timezone; with JavaScript
 disabled, both the heading and timestamps explicitly use UTC. Deploy behind
 HTTPS to protect the key in transit. The key is not put in the URL or the response,
-and the page is marked `no-store`. Users must enter their key again on a later
-visit.
+and the page is marked `no-store`.
+
+With JavaScript enabled, select **Remember on this browser** before submitting
+to save a successfully validated key in this site's `localStorage`. Later visits
+automatically load usage; **Refresh usage** retrieves the latest spending without
+re-entering the key. Remembering is opt-in. **Forget key** removes the saved key
+and clears the displayed usage; unchecking the option also removes the saved key.
+An invalid or rotated saved key is removed after a rejected lookup.
+
+Browser storage holds the API key itself, not a restricted usage-only credential.
+Anyone with access to the browser profile, or scripts running on the same origin,
+can access it and use it for API requests. Enable remembering only on a trusted,
+private device. Forgetting does not revoke the key; use `key rotate` to revoke it.
+Without JavaScript or available browser storage, manual key entry still works,
+but remembering is unavailable.
 Other methods return `405` with `Allow: GET, POST`.
 
 ## Manage users

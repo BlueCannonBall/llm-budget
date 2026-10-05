@@ -278,14 +278,18 @@ pw::Response usage_page(uint16_t status_code, const std::string& details = {}) {
 <script src="usage.js" defer></script>
 <main><h1>LLM Budget usage</h1><form method="post" action="usage" autocomplete="off">
 <label for="api-key">API key</label> <input id="api-key" name="api_key" type="password" maxlength="64" required autocomplete="off">
-<button type="submit">Show usage</button></form>)";
+<div id="remember-controls" hidden><label><input id="remember-key" type="checkbox"> Remember on this browser</label>
+<small>Stores your API key in this browser. Only enable on a trusted, private device.</small>
+<button id="forget-key" type="button" class="secondary">Forget key</button></div>
+<button type="submit">Show usage</button></form>
+<p id="usage-message" role="status"></p><section id="usage-result" aria-live="polite">)";
     html += details;
-    html += "</main></html>";
+    html += "</section></main></html>";
     return pw::Response(status_code, html, {
                                                {"Content-Type", "text/html; charset=utf-8"},
                                                {"Cache-Control", "no-store"},
                                                {"Referrer-Policy", "no-referrer"},
-                                               {"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
+                                               {"Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
                                                {"X-Content-Type-Options", "nosniff"},
                                            });
 }
@@ -357,11 +361,104 @@ int main(int argc, char** argv) {
     dateStyle: "medium",
     timeStyle: "long"
 });
-for (const timestamp of document.querySelectorAll("time[datetime]")) {
-    timestamp.textContent = formatter.format(new Date(timestamp.dateTime));
+function localizeTimes() {
+    for (const timestamp of document.querySelectorAll("time[datetime]")) {
+        timestamp.textContent = formatter.format(new Date(timestamp.dateTime));
+    }
+    const heading = document.getElementById("reset-timezone");
+    if (heading) heading.textContent = `Reset (${formatter.resolvedOptions().timeZone})`;
 }
-const heading = document.getElementById("reset-timezone");
-if (heading) heading.textContent = `Reset (${formatter.resolvedOptions().timeZone})`;
+localizeTimes();
+
+const form = document.querySelector("form");
+const keyInput = document.getElementById("api-key");
+const remember = document.getElementById("remember-key");
+const forget = document.getElementById("forget-key");
+const result = document.getElementById("usage-result");
+const message = document.getElementById("usage-message");
+const submit = form.querySelector('button[type="submit"]');
+const storageKey = "llm-budget.usage-api-key";
+document.getElementById("remember-controls").hidden = false;
+
+function forgetKey() {
+    try {
+        localStorage.removeItem(storageKey);
+        message.textContent = "";
+    } catch {
+        message.textContent = "Browser storage is unavailable. Clear this site's browser data to remove any saved key.";
+    }
+    remember.checked = false;
+}
+forget.addEventListener("click", () => {
+    forgetKey();
+    keyInput.value = "";
+    result.replaceChildren();
+    submit.textContent = "Show usage";
+    keyInput.focus();
+});
+remember.addEventListener("change", () => {
+    if (!remember.checked) forgetKey();
+});
+
+async function showUsage() {
+    const apiKey = keyInput.value;
+    submit.disabled = true;
+    forget.disabled = true;
+    remember.disabled = true;
+    keyInput.disabled = true;
+    message.textContent = "Loading usage…";
+    result.replaceChildren();
+    try {
+        const response = await fetch(form.action, {
+            method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({api_key: apiKey}),
+            cache: "no-store"
+        });
+        const page = new DOMParser().parseFromString(await response.text(), "text/html");
+        const details = page.getElementById("usage-result");
+        if (!details) throw new Error("Unexpected response");
+        result.replaceChildren(...details.childNodes);
+        message.textContent = "";
+        if (response.ok) {
+            submit.textContent = "Refresh usage";
+            if (remember.checked) {
+                try {
+                    localStorage.setItem(storageKey, apiKey);
+                } catch {
+                    remember.checked = false;
+                    message.textContent = "Usage loaded, but browser storage is unavailable. The key could not be remembered.";
+                }
+            }
+        } else {
+            submit.textContent = "Show usage";
+            if (response.status === 401) forgetKey();
+        }
+        localizeTimes();
+    } catch {
+        message.textContent = "Could not load usage. Please try again.";
+    } finally {
+        submit.disabled = false;
+        forget.disabled = false;
+        remember.disabled = false;
+        keyInput.disabled = false;
+    }
+}
+form.addEventListener("submit", event => {
+    event.preventDefault();
+    showUsage();
+});
+try {
+    const savedKey = localStorage.getItem(storageKey);
+    if (savedKey) {
+        keyInput.value = savedKey;
+        remember.checked = true;
+        if (!result.querySelector("table")) showUsage();
+    }
+} catch {
+    remember.disabled = true;
+    message.textContent = "Browser storage is unavailable. You can still enter a key to view usage.";
+}
 )",
                     {
                         {"Content-Type", "text/javascript; charset=utf-8"},
