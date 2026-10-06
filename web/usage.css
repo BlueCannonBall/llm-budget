@@ -219,7 +219,6 @@ label {
 table {
   width: 100%;
   border-spacing: 0;
-  table-layout: fixed;
   border: 1px solid var(--border);
   border-radius: .6rem;
   background: var(--surface);
@@ -241,11 +240,13 @@ thead th {
 }
 
 th:first-child {
-  width: 25%;
+  width: 1%;
+  white-space: nowrap;
 }
 
-th:nth-child(2) {
-  width: 32%;
+th:last-child, td:last-child {
+  width: 1%;
+  white-space: nowrap;
 }
 
 tbody th, tbody td {
@@ -293,6 +294,11 @@ progress::-moz-progress-bar {
 @media (max-width: 480px) {
   main {
     padding: 1.25rem 1rem;
+  }
+
+  th:last-child, td:last-child {
+    width: 43%;
+    white-space: normal;
   }
 
   .page-header {
