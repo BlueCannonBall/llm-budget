@@ -1,9 +1,35 @@
-#include "cost.hpp"
+#include "provider_config.hpp"
 #include <cassert>
 #include <chrono>
 #include <limits>
 #include <type_traits>
 #include <vector>
+#include <utility>
+
+static providers::Configuration make_configuration(std::string_view plan = "go", std::string_view price = "10.00") {
+    return providers::configure({
+        {"deepseek", "test-deepseek"},
+        {"openai", "test-openai"},
+        {"opencode-go", SJSON::JSObject {{"api_key", "test-go"}, {"plan", plan}, {"monthly_price_usd", price}}},
+    });
+}
+
+static const auto configuration = make_configuration();
+
+static std::optional<std::uint64_t> calculate_cost(std::string_view service, std::string_view model,
+    const cost::TokenUsage& usage, std::chrono::system_clock::time_point at,
+    const providers::Configuration& configured = configuration) {
+    const auto* provider = providers::find_provider(configured, service);
+    if (!provider || !provider->configured()) return std::nullopt;
+
+    const auto* selected_model = provider->find_model(model);
+    if (!selected_model) return std::nullopt;
+
+    auto multiplier = provider->multiplier(*selected_model);
+    if (!multiplier) return std::nullopt;
+
+    return cost::calculate(*selected_model, usage, at, *multiplier);
+}
 
 static void check_usage(const std::optional<cost::TokenUsage>& usage,
     std::uint64_t hits, std::uint64_t misses, std::uint64_t output, std::uint64_t creation = 0) {
@@ -14,46 +40,52 @@ static void check_usage(const std::optional<cost::TokenUsage>& usage,
     assert(usage->cache_creation_tokens == creation);
 }
 
+static void check_cost(std::string_view service, std::string_view model,
+    const cost::TokenUsage& usage, std::chrono::system_clock::time_point at,
+    std::uint64_t expected, const providers::Configuration& configured = configuration) {
+    auto amount = calculate_cost(service, model, usage, at, configured);
+    assert(amount && *amount == expected);
+}
+
 int main() {
     using namespace std::chrono;
     cost::TokenUsage usage {0, 35, 15, 0};
     auto off_peak = sys_days {2026y / September / 27} + 12h; // Sunday
     auto peak = sys_days {2026y / September / 28} + 1h; // Monday 01:00 UTC
 
-    auto amount = cost::calculate("deepseek", "deepseek-flash", usage, off_peak);
+    auto amount = calculate_cost("deepseek", "deepseek-flash", usage, off_peak);
     static_assert(std::is_same_v<decltype(amount), std::optional<std::uint64_t>>);
     assert(amount && *amount == 14250);
-    amount = cost::calculate("deepseek", "deepseek-flash", usage, peak);
+    amount = calculate_cost("deepseek", "deepseek-flash", usage, peak);
     assert(amount && *amount == 28500);
-    assert(*cost::calculate("deepseek", "deepseek-flash", usage, peak - 1s) == 14250);
-    assert(*cost::calculate("deepseek", "deepseek-flash", usage, peak + 3h) == 14250);
-    assert(*cost::calculate("deepseek", "deepseek-flash", usage, peak + 5h) == 28500);
-    assert(*cost::calculate("deepseek", "deepseek-flash", usage, peak + 9h) == 14250);
+    assert(*calculate_cost("deepseek", "deepseek-flash", usage, peak - 1s) == 14250);
+    assert(*calculate_cost("deepseek", "deepseek-flash", usage, peak + 3h) == 14250);
+    assert(*calculate_cost("deepseek", "deepseek-flash", usage, peak + 5h) == 28500);
+    assert(*calculate_cost("deepseek", "deepseek-flash", usage, peak + 9h) == 14250);
     // A weekday national holiday is off-peak despite falling in the peak UTC hours.
-    assert(*cost::calculate("deepseek", "deepseek-flash", usage, sys_days {2026y / September / 25} + 1h) == 14250);
-    assert(!cost::calculate("deepseek", "deepseek-flash", usage, sys_days {2027y / January / 4} + 1h));
-    assert(!cost::calculate("deepseek", "deepseek-flash", usage, sys_days {2026y / September / 9}));
+    assert(*calculate_cost("deepseek", "deepseek-flash", usage, sys_days {2026y / September / 25} + 1h) == 14250);
+    assert(!calculate_cost("deepseek", "deepseek-flash", usage, sys_days {2027y / January / 4} + 1h));
 
     usage = {10, 25, 16, 0};
-    amount = cost::calculate("deepseek", "deepseek-v4-pro", usage, off_peak);
+    amount = calculate_cost("deepseek", "deepseek-v4-pro", usage, off_peak);
     assert(amount && *amount == 48400);
-    amount = cost::calculate("deepseek", "deepseek-v4-pro", usage, peak);
+    amount = calculate_cost("deepseek", "deepseek-v4-pro", usage, peak);
     assert(amount && *amount == 96800);
 
-    assert(!cost::calculate("anthropic", "deepseek-v4-pro", usage, peak));
-    assert(!cost::calculate("deepseek", "unknown-model", usage, peak));
+    assert(!calculate_cost("anthropic", "deepseek-v4-pro", usage, peak));
+    assert(!calculate_cost("deepseek", "unknown-model", usage, peak));
     usage = {0, 9007199254740991ULL, 9007199254740991ULL, 0};
-    assert(!cost::calculate("deepseek", "deepseek-v4-pro", usage, peak));
+    assert(!calculate_cost("deepseek", "deepseek-v4-pro", usage, peak));
 
     // Check individual products, accumulation, and the peak-price multiplier.
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
-    assert(!cost::calculate("deepseek", "deepseek-flash", {maximum, 0, 0, 0}, off_peak));
-    assert(!cost::calculate("deepseek", "deepseek-flash", {0, maximum, 0, 0}, off_peak));
-    assert(!cost::calculate("deepseek", "deepseek-flash", {0, 0, maximum, 0}, off_peak));
-    assert(!cost::calculate("deepseek", "deepseek-flash", {maximum / 3, 1, 0, 0}, off_peak));
-    assert(cost::calculate("deepseek", "deepseek-flash", {0, 0, maximum / 600, 0}, off_peak));
-    assert(!cost::calculate("deepseek", "deepseek-flash", {0, 0, maximum / 600, 0}, peak));
-    amount = cost::calculate("deepseek", "deepseek-flash", {0, 0, 0, 0}, peak);
+    assert(!calculate_cost("deepseek", "deepseek-flash", {maximum, 0, 0, 0}, off_peak));
+    assert(!calculate_cost("deepseek", "deepseek-flash", {0, maximum, 0, 0}, off_peak));
+    assert(!calculate_cost("deepseek", "deepseek-flash", {0, 0, maximum, 0}, off_peak));
+    assert(!calculate_cost("deepseek", "deepseek-flash", {maximum / 3, 1, 0, 0}, off_peak));
+    assert(calculate_cost("deepseek", "deepseek-flash", {0, 0, maximum / 600, 0}, off_peak));
+    assert(!calculate_cost("deepseek", "deepseek-flash", {0, 0, maximum / 600, 0}, peak));
+    amount = calculate_cost("deepseek", "deepseek-flash", {0, 0, 0, 0}, peak);
     assert(amount && *amount == 0);
 
     SJSON::JSObject chat_usage {
@@ -75,8 +107,8 @@ int main() {
     auto anthropic = cost::from_anthropic_usage(anthropic_usage);
     check_usage(chat, 10, 25, 16);
     check_usage(anthropic, 10, 25, 16);
-    assert(*cost::calculate("deepseek", "deepseek-v4-pro", *chat, off_peak) == 48400);
-    assert(*cost::calculate("deepseek", "deepseek-v4-pro", *anthropic, off_peak) == 48400);
+    assert(*calculate_cost("deepseek", "deepseek-v4-pro", *chat, off_peak) == 48400);
+    assert(*calculate_cost("deepseek", "deepseek-v4-pro", *anthropic, off_peak) == 48400);
 
     // Cache creation is disjoint from ordinary input in the Messages format.
     anthropic_usage["input_tokens"] = 20;
@@ -124,9 +156,7 @@ int main() {
         }
         auto missing = chat_usage;
         missing.erase(field);
-        check_usage(cost::from_chat_completions_usage(missing),
-            std::string_view(field) == "prompt_cache_hit_tokens" ? 0 : 10,
-            std::string_view(field) == "prompt_cache_miss_tokens" ? 0 : 25,
+        check_usage(cost::from_chat_completions_usage(missing), 10, 25,
             std::string_view(field) == "completion_tokens" ? 0 : 16);
     }
     for (const auto& field : {"input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"}) {
@@ -145,4 +175,161 @@ int main() {
             std::string_view(field) == "cache_creation_input_tokens" ? 0 : 5);
     }
     check_usage(cost::from_anthropic_usage({{"input_tokens", 9007199254740991.0}, {"output_tokens", 0}}), 0, 9007199254740991ULL, 0);
+
+    // Ordinary OpenAI prompts must not become free just because DeepSeek's
+    // explicit cache-miss field is absent.
+    check_usage(cost::from_chat_completions_usage({{"prompt_tokens", 35}, {"completion_tokens", 16}}), 0, 35, 16);
+    check_usage(cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 10}}},
+        {"completion_tokens", 16}}), 10, 25, 16);
+    check_usage(cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_cache_hit_tokens", 10}}), 10, 25, 0);
+    check_usage(cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_cache_miss_tokens", 25}}), 10, 25, 0);
+    check_usage(cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {}}}), 0, 35, 0);
+    check_usage(cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSNull {}}}), 0, 35, 0);
+    assert(!cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 36}}}}));
+    assert(!cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_cache_hit_tokens", 10},
+        {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 9}}}}));
+    assert(!cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_cache_miss_tokens", 24},
+        {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 10}}}}));
+    for (const auto& invalid : invalid_counts) {
+        assert(!cost::from_chat_completions_usage({
+            {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", invalid}}}}));
+        if (!invalid.is_null()) {
+            assert(!cost::from_chat_completions_usage({
+                {"prompt_tokens", 35}, {"prompt_tokens_details", invalid}}));
+        }
+    }
+    assert(!cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSArray {}}}));
+
+    // Direct pricing treats cache writes as ordinary input.
+    check_cost("deepseek", "deepseek-v4-pro", {10, 25, 16, 5}, off_peak, 48400);
+
+    // Identical token prices, different included allowances: $10/$15 versus $10/$60.
+    check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 1244000);
+    check_cost("opencode-go", "glm-5.2", {100, 1000, 100, 0}, off_peak, 311000);
+
+    // Plus allowances are model-specific, not a uniform multiple of Go.
+    auto plus_configuration = make_configuration("go-plus", "40.00");
+    check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 622000, plus_configuration);
+    check_cost("opencode-go", "glm-5.2", {100, 1000, 100, 0}, off_peak, 414667, plus_configuration);
+
+    plus_configuration = make_configuration("go-plus", "20.00");
+    check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 311000, plus_configuration);
+
+    plus_configuration = make_configuration("go-plus", "0.00");
+    check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 0, plus_configuration);
+    check_cost("deepseek", "deepseek-flash", {0, 35, 15, 0}, off_peak, 14250, plus_configuration);
+
+    assert(!calculate_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, providers::Configuration {}));
+
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, off_peak, 2375);
+    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, off_peak, 4750);
+    check_cost("opencode-go", "deepseek-v4-flash-vision-exp", {0, 35, 15, 0}, off_peak, 9500);
+
+    // Cache writes use their own rate without also charging the input rate.
+    check_cost("opencode-go", "minimax-m2.7", {100, 205, 1000, 5}, off_peak, 211313);
+    check_cost("opencode-go", "minimax-m2.7", {0, 10, 0, 10}, off_peak, 625);
+    check_cost("opencode-go", "minimax-m3", {0, 10, 0, 10}, off_peak, 500);
+
+    // Fractional nanodollar rates survive until the final subscription calculation.
+    check_cost("opencode-go", "mimo-v2.6-pro", {1, 0, 0, 0}, off_peak, 3);
+    check_cost("opencode-go", "mimo-v2.6-pro", {2, 0, 0, 0}, off_peak, 5);
+    check_cost("opencode-go", "mimo-v2.6-flash", {1, 0, 0, 0}, off_peak, 1);
+    check_cost("opencode-go", "mimo-v2.6-flash", {6, 0, 0, 0}, off_peak, 3);
+    check_cost("opencode-go", "mimo-v2.6-pro", {1, 1, 1, 0}, off_peak, 873);
+
+    // Go uses UTC weekdays, independently of direct DeepSeek's China holidays.
+    auto go_peak = sys_days {2026y / October / 1} + 1h;
+    check_cost("deepseek", "deepseek-flash", {0, 35, 15, 0}, go_peak, 14250);
+    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, go_peak, 9500);
+
+    for (auto time : std::initializer_list<sys_seconds> {peak - 1s, peak + 3h, peak + 9h, off_peak}) {
+        check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, time, 4750);
+    }
+
+    for (auto time : {peak, peak + 5h, sys_days {2027y / January / 4} + 1h}) {
+        check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, time, 9500);
+    }
+
+    auto saturday = sys_days {2026y / October / 3} + 1h;
+    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, saturday, 4750);
+
+    auto friday_late = sys_days {2026y / October / 2} + 23h;
+    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, friday_late, 4750);
+
+    // Context thresholds count all input, not output, and select whole-request rates.
+    check_cost("opencode-go", "qwen3.7-plus", {255999, 1, 10, 1}, off_peak, 1709410);
+    check_cost("opencode-go", "qwen3.7-plus", {255999, 2, 10, 1}, off_peak, 5128430);
+    check_cost("opencode-go", "qwen3.7-plus", {0, 256000, 1000000, 0}, off_peak, 283733334);
+
+    check_cost("opencode-go", "grok-4.7", {200000, 0, 1, 0}, off_peak, 66670667);
+    check_cost("opencode-go", "grok-4.7", {200000, 1, 1, 0}, off_peak, 133344000);
+    check_cost("opencode-go", "gpt-6-luna", {272000, 0, 1, 0}, off_peak, 1813667);
+    check_cost("opencode-go", "gpt-6-luna", {272000, 1, 1, 1}, off_peak, 3627334);
+
+    for (auto model : {"space-bunny-free", "longcat-2.5-preview-free"}) {
+        check_cost("opencode-go", model, {maximum, 0, maximum, 0}, peak, 0);
+    }
+
+    check_cost("opencode-go", "glm-5.3", {0, 0, 0, 0}, peak, 0);
+    check_cost("deepseek", "deepseek-flash", {maximum / 3, 0, 0, 0}, off_peak, maximum);
+
+    // Large intermediate sums must not overflow when the final cost still fits.
+    check_cost("opencode-go", "mimo-v2.6-pro", {maximum / 4, 0, 0, 0}, off_peak, 11144907877866187433ULL);
+    assert(!calculate_cost("opencode-go", "glm-5.3", {0, maximum, maximum, 0}, off_peak));
+    assert(!calculate_cost("opencode-go", "mimo-v2.6-pro", {maximum, 1, 0, 0}, off_peak));
+    assert(!calculate_cost("deepseek", "deepseek-flash", {0, 1, 0, 2}, off_peak));
+    assert(!calculate_cost("opencode-go", "space-bunny-free", {0, 1, 0, 2}, off_peak));
+    assert(!calculate_cost("unknown", "glm-5.3", {0, 0, 0, 0}, off_peak));
+    assert(!calculate_cost("opencode-go", "unknown", {0, 0, 0, 0}, off_peak));
+
+    check_cost("openai", "gpt-4.1-mini", {10, 25, 16, 0}, peak, 36600);
+    check_cost("openai", "gpt-4o-mini", {10, 25, 16, 0}, peak, 14100);
+
+    // The same upstream name can be different products; never silently choose
+    // a subscription or provider for an unqualified model.
+    auto direct = providers::resolve(configuration, "deepseek-v4-pro");
+    auto direct_qualified = providers::resolve(configuration, "deepseek/deepseek-v4-pro");
+    auto go = providers::resolve(configuration, "opencode-go/deepseek-v4-pro");
+    assert(direct && direct_qualified && go);
+    assert(direct->provider->definition().name == "deepseek" && direct_qualified->provider->definition().name == "deepseek");
+    assert(go->provider->definition().name == "opencode-go");
+    assert(direct->model->name == "deepseek-v4-pro" && direct_qualified->model->name == "deepseek-v4-pro");
+    assert(go->model->name == "deepseek-v4-pro");
+    assert(direct->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && direct->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
+    assert(go->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !go->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
+
+    auto messages = providers::resolve(configuration, "opencode-go/minimax-m2.7");
+    assert(messages && messages->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES) && !messages->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS));
+
+    auto responses = providers::resolve(configuration, "opencode-go/gpt-6-luna");
+    assert(responses && responses->model->supports(providers::PROTOCOL_RESPONSES));
+    assert(!responses->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !responses->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
+
+    auto openai = providers::resolve(configuration, "openai/gpt-4.1-mini");
+    assert(openai && openai->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !openai->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
+
+    assert(!providers::resolve(configuration, "glm-5.3"));
+    assert(!providers::resolve(configuration, "gpt-4.1-mini"));
+    assert(!providers::resolve(configuration, "opencode-go/"));
+    assert(!providers::resolve(configuration, "opencode-go/glm-5.3/extra"));
+    assert(!providers::resolve(configuration, "deepseek/glm-5.3"));
+    assert(!providers::resolve(configuration, "unknown/deepseek-v4-pro"));
+
+    // Reordering configured providers must not change routing or pricing.
+    auto reordered = make_configuration();
+    std::swap(reordered.front(), reordered.back());
+    auto reordered_direct = providers::resolve(reordered, "deepseek-v4-pro");
+    assert(reordered_direct && reordered_direct->provider->definition().name == "deepseek");
+    check_cost("deepseek", "deepseek-v4-pro", {0, 35, 15, 0}, off_peak, 52800, reordered);
+    check_cost("opencode-go", "deepseek-v4-pro", {0, 35, 15, 0}, off_peak, 35200, reordered);
+    check_cost("openai", "gpt-4.1-mini", {10, 25, 16, 0}, off_peak, 36600, reordered);
 }

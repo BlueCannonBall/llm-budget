@@ -1,157 +1,294 @@
-"""Run with python3 tests/proxy_callbacks.py; requires a C++23 compiler.
+"""Build the server first, then run python3 tests/proxy_callbacks.py.
 
-Compile the actual JSON/SSE callbacks and request-isolation block from main.cpp
-with recording storage stubs. No upstream traffic or real database is used.
+Exercise the real proxy against a local HTTP upstream. GNU ld --wrap redirects
+only the fetch destination; parsing, streaming, routing, storage and limits use
+production code. No real provider credentials or external traffic are used.
 """
 
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import pathlib
-import re
+import shutil
+import socket
+import sqlite3
 import subprocess
 import tempfile
+import threading
+import time
 
 
 root = pathlib.Path(__file__).resolve().parents[1]
-source = (root / "main.cpp").read_text()
-sse_callbacks = re.findall(r"pw::SSEParser sse_parser\(.*?\n                        \}\);", source, re.S)
-json_callbacks = re.findall(r'SJSON::Parse json_parser;\n                        json_parser.listen\("usage",.*?\n                        \}\);', source, re.S)
-assert len(sse_callbacks) == len(json_callbacks) == 2
-service_definition = re.search(r"struct Service \{.*?\n\};", source, re.S).group()
-service_lookup = re.search(r"std::optional<Service> model_to_service\(.*?\n\}", source, re.S).group()
-record_cost_definition = re.search(r"void record_request_cost\(.*?\n\}", source, re.S).group()
-metadata_block = re.search(r'if \(service->name == "deepseek"\) \{\n                    auto& metadata.*?\n                \}', source, re.S).group()
-upstream_urls = re.findall(r'pw::fetch\("POST", (service\.\w+ \+ "[^"]+")', source)
-assert len(upstream_urls) == 2
+seen = []
 
-cpp = r'''
-#include "Polyweb/sse.hpp"
-#include "SJSON/src/sjson.hpp"
-#include "cost.hpp"
-#include <cassert>
-#include <iostream>
-#include <vector>
-#define SPDLOG_WARN(...) ((void)0)
-struct User { std::string name; };
-using request_id_t = std::int64_t;
-std::vector<std::uint64_t> recorded;
-std::vector<cost::TokenUsage> printed;
-void update_request(std::uint64_t, std::uint64_t amount) { recorded.push_back(amount); }
-void print_cost(std::uint64_t, const User&, std::uint64_t, std::string_view, std::string_view, const cost::TokenUsage& usage) { printed.push_back(usage); }
-int make_basic_resp(int status, const std::string&) { return status; }
-'''
-cpp += service_definition + "\n" + service_lookup + "\n"
-cpp += record_cost_definition + "\n"
-cpp += "int isolate_metadata(SJSON::JSObject& req_body) {\n"
-cpp += 'std::optional<User> user = User {"alice"}; auto service = model_to_service("deepseek-v4-pro");\n'
-cpp += metadata_block + "\nreturn 200;\n}\n"
-for name, expression in zip(("chat_url", "anthropic_url"), upstream_urls):
-    cpp += f"std::string {name}(const Service& service) {{ return {expression}; }}\n"
 
-context = r'''
-    using namespace std::chrono;
-    User user {"alice"};
-    std::string model = "deepseek-v4-pro";
-    Service service = *model_to_service(model);
-    const auto now = sys_days {2026y / September / 27} + 12h;
-    std::optional<std::uint64_t> request_id = 1;
-    recorded.clear();
-'''
-for protocol, callback in zip(("chat", "anthropic"), sse_callbacks):
-    cpp += f"std::vector<std::uint64_t> {protocol}_sse(const std::string& input, std::size_t width) {{\n"
-    cpp += context + callback + r'''
-    for (std::size_t offset = 0; offset < input.size(); offset += width) {
-        assert(sse_parser(input.substr(offset, width)));
-    }
-    return recorded;
-}
-'''
-for protocol, callback in zip(("chat", "anthropic"), json_callbacks):
-    cpp += f"std::vector<std::uint64_t> {protocol}_json(const std::string& input, std::size_t width) {{\n"
-    cpp += context + callback + r'''
-    for (std::size_t offset = 0; offset < input.size(); offset += width) {
-        json_parser.recv(input.substr(offset, width));
-    }
-    return recorded;
-}
-'''
-cpp += r'''
-std::string event(std::string name, std::string data) {
-    return "event: " + name + "\r\ndata: " + data + "\r\n\r\n";
-}
-int main() {
-    for (const auto& model : {"deepseek-flash", "deepseek-v4-pro"}) {
-        auto service = model_to_service(model);
-        assert(service && service->name == "deepseek");
-        assert(chat_url(*service) == "https://api.deepseek.com/chat/completions");
-        assert(anthropic_url(*service) == "https://api.deepseek.com/anthropic/v1/messages");
-    }
-    assert(!model_to_service("unknown"));
-    for (SJSON::JSObject body : {SJSON::JSObject {}, SJSON::JSObject {{"metadata", SJSON::JSNull {}}}}) {
-        assert(isolate_metadata(body) == 200);
-        assert(body.at("metadata").object().at("user_id").string() == "alice");
-    }
-    SJSON::JSObject spoofed {{"metadata", SJSON::JSObject {{"user_id", "another-user"}, {"note", "keep"}}}};
-    assert(isolate_metadata(spoofed) == 200);
-    assert(spoofed.at("metadata").object().at("user_id").string() == "alice");
-    assert(spoofed.at("metadata").object().at("note").string() == "keep");
-    for (const SJSON::JSValue& value : {SJSON::JSValue(1), SJSON::JSValue("invalid"), SJSON::JSValue(SJSON::JSArray {})}) {
-        SJSON::JSObject invalid {{"metadata", value}};
-        assert(isolate_metadata(invalid) == 400);
-    }
+class Upstream(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
 
-    const std::string chat_usage = R"({"prompt_tokens":35,"prompt_cache_hit_tokens":10,"prompt_cache_miss_tokens":25,"completion_tokens":16,"completion_tokens_details":{"reasoning_tokens":13}})";
-    const std::string anthropic_usage = R"({"input_tokens":25,"cache_read_input_tokens":10,"cache_creation_input_tokens":0,"output_tokens":16})";
-    const std::string chat_stream = ": keep-alive\r\n\r\n"
-        + event("message", R"({"choices":[{"delta":{"content":"Hello"}}],"usage":null})")
-        + event("message", "{\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":" + chat_usage + "}")
-        + "data: [DONE]\r\n\r\n";
-    const auto start = event("message_start", R"({"type":"message_start","message":{"usage":{"input_tokens":25,"cache_read_input_tokens":10,"cache_creation_input_tokens":0,"output_tokens":1}}})");
-    const auto delta = event("message_delta", R"({"type":"message_delta","usage":{"output_tokens":16}})");
-    const auto stop = event("message_stop", R"({"type":"message_stop"})");
-    const auto full_delta = event("message_delta", "{\"usage\":" + anthropic_usage + "}");
-    for (std::size_t width : {1, 2, 7, 64, 4096}) {
-        auto chat_s = chat_sse(chat_stream, width);
-        assert(chat_s.size() == 1 && chat_s.back() == 48400);
-        assert(printed.back().cache_hit_tokens == 10 && printed.back().cache_miss_tokens == 25 && printed.back().cache_creation_tokens == 0);
-        auto chat_j = chat_json("{\"usage\":" + chat_usage + "}", width);
-        assert(chat_j.size() == 1 && chat_j.back() == 48400);
-        auto anthropic_j = anthropic_json("{\"usage\":" + anthropic_usage + "}", width);
-        assert(anthropic_j.size() == 1 && anthropic_j.back() == 48400);
-        auto anthropic_s = anthropic_sse(start + event("ping", "{}") + event("future_event", "{}") + delta + stop, width);
-        assert(anthropic_s.size() == 2 && anthropic_s.front() == 18700 && anthropic_s.back() == 48400);
-        auto repeated_input = anthropic_sse(start + full_delta + stop, width);
-        assert(repeated_input.back() == 48400);
-        auto repeated_output = anthropic_sse(start + delta + delta + stop, width);
-        assert(repeated_output.size() == 3 && repeated_output.back() == 48400);
-        auto changed_input = anthropic_sse(start + event("message_delta", R"({"usage":{"input_tokens":30,"output_tokens":16}})") + stop, width);
-        assert(changed_input.back() == 51700);
-        auto created = anthropic_sse(start + event("message_delta", R"({"usage":{"cache_creation_input_tokens":5,"output_tokens":16}})")
-            + event("message_delta", R"({"usage":{"input_tokens":20}})") + stop, width);
-        assert(created.size() == 3 && created[1] == 51700 && created.back() == 48400);
-        assert(printed.back().cache_hit_tokens == 10 && printed.back().cache_miss_tokens == 25 && printed.back().cache_creation_tokens == 5);
-        auto zero_cache = anthropic_sse(start + event("message_delta", R"({"usage":{"cache_read_input_tokens":0,"output_tokens":16}})") + stop, width);
-        assert(zero_cache.back() == 48180);
-        auto zero_output = anthropic_sse(start + event("message_delta", R"({"usage":{"output_tokens":0}})") + stop, width);
-        assert(zero_output.back() == 16720);
-        auto invalid_delta = anthropic_sse(start + event("message_delta", R"({"usage":{"output_tokens":-1}})") + delta + stop, width);
-        assert(invalid_delta.size() == 2 && invalid_delta.back() == 48400);
-    }
-    const auto huge_start = event("message_start", R"({"message":{"usage":{"input_tokens":9000000000000000,"output_tokens":0}}})");
-    const auto huge_delta = event("message_delta", R"({"usage":{"output_tokens":9000000000000000}})");
-    auto overflow = anthropic_sse(huge_start + huge_delta + stop, 1);
-    assert(overflow.size() == 1 && overflow.front() == 5940000000000000000ULL);
-    std::cout << "PASS: upstream URLs, trusted Messages isolation, JSON/SSE accounting, cumulative updates, zeros, invalid counts and overflow\n";
-}
-'''
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        seen.append((self.headers["X-Test-Original-URL"], dict(self.headers), body))
+        if self.path.endswith("/messages"):
+            usage = {"input_tokens": 200, "cache_read_input_tokens": 100,
+                     "cache_creation_input_tokens": 5, "output_tokens": 1000}
+            if body.get("stream"):
+                initial = dict(usage, output_tokens=1)
+                payload = (
+                    'event: message_start\ndata: ' + json.dumps({"message": {"usage": initial}}) + '\n\n'
+                    'event: message_delta\ndata: ' + json.dumps({"usage": {"output_tokens": 1000}}) + '\n\n'
+                    'event: message_stop\ndata: {}\n\n'
+                ).encode()
+            else:
+                payload = json.dumps({"usage": usage}).encode()
+        else:
+            # OpenAI-compatible cache reporting: no DeepSeek-specific fields.
+            usage = {"prompt_tokens": 300, "prompt_tokens_details": {"cached_tokens": 100},
+                     "completion_tokens": 1000000}
+            if body.get("stream"):
+                payload = ('data: ' + json.dumps({"usage": usage}) + '\n\ndata: [DONE]\n\n').encode()
+            else:
+                payload = json.dumps({"usage": usage}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream" if body.get("stream") else "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        # Fragment lifecycle events and JSON across transport reads.
+        for offset in range(0, len(payload), 7):
+            self.wfile.write(payload[offset:offset + 7])
+            self.wfile.flush()
+
+
+with socket.socket() as available_port:
+    available_port.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    available_port.bind(("127.0.0.1", 8787))
 
 with tempfile.TemporaryDirectory(prefix="llm-budget-proxy-tests-") as temporary:
     directory = pathlib.Path(temporary)
-    cpp_path = directory / "callbacks.cpp"
-    cpp_path.write_text(cpp)
-    executable = directory / "callbacks"
-    subprocess.run([
-        "g++", "-std=c++23", "-O2", "-Wall", "-Wextra", "-I" + str(root),
-        str(cpp_path), str(root / "SJSON/src/value.cpp"),
-        str(root / "SJSON/src/token.cpp"), str(root / "SJSON/src/sjson.cpp"),
-        "-o", str(executable),
-    ], check=True)
-    subprocess.run([str(executable)], check=True)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        symbols = subprocess.check_output(["nm", "-u", str(root / "obj/main_0.o")], text=True)
+        symbol, = [line.split()[-1] for line in symbols.splitlines() if "_ZN2pw5fetch" in line]
+        wrapper = directory / "transport.cpp"
+        wrapper.write_text('''#include "Polyweb/polyweb.hpp"
+#include <utility>
+pn::Status real_fetch(std::string, pn::StringView, pw::Response&, pn::StringView,
+    pw::Headers, const pw::ClientConfig&, std::string) asm("__real_''' + symbol + '''");
+pn::Status local_fetch(std::string, pn::StringView, pw::Response&, pn::StringView,
+    pw::Headers, const pw::ClientConfig&, std::string) asm("__wrap_''' + symbol + '''");
+pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& response,
+    pn::StringView body, pw::Headers headers, const pw::ClientConfig& config, std::string version) {
+    pw::URLInfo parsed;
+    if (auto result = parsed.parse(url); !result) return result;
+    headers["X-Test-Original-URL"] = std::string(url);
+    std::string local = "http://127.0.0.1:''' + str(upstream.server_port) + '''" + std::string(parsed.path);
+    return real_fetch(std::move(method), local, response, body, std::move(headers), config, std::move(version));
+}
+''')
+        binary = directory / "proxy"
+        subprocess.run([
+            "g++", "-std=c++23", "-O2", "-pthread", "-I" + str(root), str(wrapper),
+            *(str(path) for path in sorted((root / "obj").glob("*.o"))),
+            str(root / "spdlog/build/libspdlog.a"), "-lssl", "-lcrypto", "-lsqlite3",
+            "-Wl,--wrap=" + symbol, "-o", str(binary),
+        ], check=True)
+        shutil.copytree(root / "web", directory / "web")
+        (directory / "keys.json").write_text(json.dumps({
+            "deepseek": "test-deepseek",
+            "opencode-go": {"api_key": "test-go", "plan": "go", "monthly_price_usd": "10.00"},
+            "openai": "test-openai",
+        }))
+        keys = []
+        for name in ("alice", "bob"):
+            result = subprocess.run([str(binary), "user", "add", name, "--five-hour-limit", "10", "--weekly-limit", "10"],
+                                    cwd=directory, text=True, capture_output=True, check=True)
+            keys.append(result.stdout.split("API key: ")[1].strip())
+        db = sqlite3.connect(directory / "llm-budget.db")
+        server = subprocess.Popen([str(binary)], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            for _ in range(100):
+                try:
+                    with socket.create_connection(("127.0.0.1", 8787), timeout=0.2):
+                        break
+                except OSError:
+                    time.sleep(0.02)
+            else:
+                raise AssertionError("server did not start")
+
+            def request(model, route="/chat/completions", stream=False, user=0):
+                connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
+                headers = {"Content-Type": "application/json", "Authorization": "Bearer " + keys[user],
+                           "x-opencode-session": "conversation-1"}
+                connection.request("POST", route, json.dumps({"model": model, "messages": [], "stream": stream}), headers)
+                response = connection.getresponse()
+                result = response.status, response.read()
+                connection.close()
+                return result
+
+            def last_row():
+                for _ in range(100):
+                    row = db.execute(
+                        "SELECT cost_nanodollars, state FROM requests ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+
+                    if row and row[1] == "completed":
+                        return row[0]
+
+                    time.sleep(0.01)
+
+                raise AssertionError(row)
+
+            assert request("deepseek/deepseek-flash")[0] == 200
+            direct = last_row()
+            assert direct in (600030300, 1200060600), direct
+            assert seen[-1][0] == "https://api.deepseek.com/chat/completions"
+            assert seen[-1][2]["model"] == "deepseek-flash" and seen[-1][2]["user_id"] == "alice"
+
+            assert request("opencode-go/deepseek-v4-flash", stream=True, user=1)[0] == 200
+            go = last_row()
+            assert go in (200010100, 400020200), go
+            assert go < direct
+            assert seen[-1][0] == "https://opencode.ai/zen/go/v1/chat/completions"
+            assert seen[-1][1]["Authorization"] == "Bearer test-go"
+            assert seen[-1][1]["User-Agent"] == "llm-budget/1.0"
+            assert seen[-1][1]["x-opencode-session"] == "conversation-1"
+            assert seen[-1][2]["model"] == "deepseek-v4-flash"
+
+            assert request("opencode-go/glm-5.3-flash")[0] == 200
+            flat = last_row()
+            assert flat == 83338834, flat
+
+            assert request("opencode-go/minimax-m2.7", "/v1/messages", stream=True)[0] == 200
+            messages = last_row()
+            # Input, reads, writes and final cumulative output; no delta double counting.
+            assert messages == 211313, messages
+            assert seen[-1][0] == "https://opencode.ai/zen/go/v1/messages"
+            assert seen[-1][1]["x-api-key"] == "test-go"
+            assert "Authorization" not in seen[-1][1]
+
+            assert request("openai/gpt-4.1-mini")[0] == 200
+            openai = last_row()
+            assert openai == 1600090000, openai
+            assert seen[-1][0] == "https://api.openai.com/v1/chat/completions"
+            assert seen[-1][1]["Authorization"] == "Bearer test-openai"
+
+            count = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+            calls = len(seen)
+            assert request("opencode-go/minimax-m2.7")[0] == 400
+            assert request("opencode-go/gpt-5.6-luna")[0] == 400
+            assert request("not-a-model")[0] == 400
+            assert len(seen) == calls
+            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count
+
+            # The allocated subscription cost leaves room even when nominal usage would not.
+            db.execute(
+                "UPDATE users SET five_hour_limit_nanodollars=?, weekly_limit_nanodollars=? WHERE id=2",
+                (go + 1, go + 1),
+            )
+            db.commit()
+
+            assert request("opencode-go/glm-5.3-flash", user=1)[0] == 200
+            assert last_row() == 83338834
+            assert request("opencode-go/glm-5.3-flash", user=1)[0] == 429
+            assert len(seen) == calls + 1
+        finally:
+            server.terminate()
+            server.communicate(timeout=5)
+            db.close()
+
+        # Replace one configured provider with a catalog whose pricing can be
+        # unavailable. The production routes, transport and database remain real.
+        pricing_main = directory / "pricing_main.cpp"
+        pricing_main.write_text('''#include "provider_config.hpp"
+namespace providers {
+    class PricingFixtureProvider final : public ConfiguredProvider {
+    protected:
+        inline static constexpr Provider provider_definition {
+            .name = "pricing-fixture",
+            .chat_completions_base_url = "http://127.0.0.1",
+            .anthropic_messages_base_url = "http://127.0.0.1",
+        };
+        inline static constexpr Model model_catalog[] {
+            {
+                .name = "unpriced",
+                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES,
+                .rates = {.input = 150'000, .cached_read = 3'000, .output = 600'000, .cached_write = 150'000},
+            },
+            {
+                .name = "free",
+                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES,
+                .rates = {.input = 150'000, .cached_read = 3'000, .output = 600'000, .cached_write = 150'000},
+            },
+        };
+
+    public:
+        PricingFixtureProvider():
+            ConfiguredProvider(provider_definition) {
+            api_key = "local-pricing-fixture";
+        }
+
+        std::span<const Model> models() const override {
+            return model_catalog;
+        }
+
+        std::optional<cost::Multiplier> multiplier(const Model& model) const override {
+            if (model.name == "free") return cost::Multiplier {0, 1};
+
+            return std::nullopt;
+        }
+    };
+
+    Configuration configure_with_pricing_fixture(SJSON::JSObject keys) {
+        auto configured = configure(std::move(keys));
+        configured.front() = std::make_unique<PricingFixtureProvider>();
+        return configured;
+    }
+}
+#define configure(...) configure_with_pricing_fixture(__VA_ARGS__)
+#include "main.cpp"
+''')
+        pricing_binary = directory / "pricing_proxy"
+        subprocess.run([
+            "g++", "-std=c++23", "-O2", "-pthread", "-I" + str(root),
+            "-I" + str(root / "spdlog/include"), str(pricing_main), str(wrapper),
+            *(str(path) for path in sorted((root / "obj").glob("*.o")) if path.name != "main_0.o"),
+            str(root / "spdlog/build/libspdlog.a"), "-lssl", "-lcrypto", "-lsqlite3",
+            "-Wl,--wrap=" + symbol, "-o", str(pricing_binary),
+        ], check=True)
+        db = sqlite3.connect(directory / "llm-budget.db")
+        server = subprocess.Popen([str(pricing_binary)], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            for _ in range(100):
+                try:
+                    with socket.create_connection(("127.0.0.1", 8787), timeout=0.2):
+                        break
+                except OSError:
+                    time.sleep(0.02)
+            else:
+                raise AssertionError("pricing fixture did not start")
+
+            count = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+            calls = len(seen)
+            for route in ("/chat/completions", "/v1/messages"):
+                status, body = request("pricing-fixture/unpriced", route)
+                assert status == 503, (status, body)
+                assert len(seen) == calls, "Unpriced request reached upstream"
+                assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count
+
+            for route in ("/chat/completions", "/v1/messages"):
+                assert request("pricing-fixture/free", route)[0] == 200
+                assert last_row() == 0, "A resolved zero multiplier must remain valid"
+            assert len(seen) == calls + 2
+            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count + 2
+        finally:
+            server.terminate()
+            server.communicate(timeout=5)
+            db.close()
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+
+print("PASS: real proxy routing, JSON/SSE accounting, budget limits, unpriced rejection without dispatch/rows, and valid zero multipliers")

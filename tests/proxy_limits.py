@@ -78,6 +78,17 @@ with tempfile.TemporaryDirectory() as directory:
                     assert max(1, math.ceil((reset - after_ms) / 1000)) <= int(delay) <= max(1, math.ceil((reset - before_ms) / 1000)), (scenario, delay, reset)
                 connection.close()
                 assert db.execute("SELECT COUNT(*) FROM requests").fetchone() == (1,)
+
+        # Provider selection must fail locally when its upstream key is absent.
+        for model in ("opencode-go/glm-5.3-flash", "openai/gpt-4.1-mini"):
+            connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
+            connection.request("POST", "/chat/completions", json.dumps({"model": model, "messages": []}),
+                               {"Content-Type": "application/json", "Authorization": "Bearer " + key})
+            response = connection.getresponse()
+            assert response.status == 503, (model, response.status, response.read())
+            response.read()
+            connection.close()
+        assert db.execute("SELECT COUNT(*) FROM requests").fetchone() == (1,)
     finally:
         server.terminate()
         server.communicate(timeout=5)

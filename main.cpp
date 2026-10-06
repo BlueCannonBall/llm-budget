@@ -5,6 +5,8 @@
 #include "cli.hpp"
 #include "cost.hpp"
 #include "database.hpp"
+#include "provider_config.hpp"
+#include "providers.hpp"
 #include "usage_page.hpp"
 #include <fstream>
 #include <functional>
@@ -13,12 +15,6 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
-
-struct Service {
-    std::string name;
-    std::string chat_completions_base_url;
-    std::string anthropic_messages_base_url;
-};
 
 struct HeadMessage {
     uint16_t status_code;
@@ -39,25 +35,15 @@ const pw::ClientConfig upstream_client_config {
     },
 };
 
-std::optional<Service> model_to_service(std::string_view model) {
-    if (model == "deepseek-v4-pro" || model == "deepseek-flash") {
-        return Service {
-            "deepseek",
-            "https://api.deepseek.com",
-            "https://api.deepseek.com/anthropic",
-        };
-    }
-    return std::nullopt;
-}
-
 // Request cost accounting.
-void print_cost(std::uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model, const cost::TokenUsage& token_usage) {
+void print_cost(uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model, const cost::TokenUsage& token_usage) {
     std::ostringstream formatted;
     formatted << std::fixed << std::setprecision(9)
               << (double) nanodollars / 1'000'000'000;
-    // cache_miss_tokens prices cache writes at the miss rate; subtract them to
-    // report the raw uncached input count.
-    std::uint64_t input_tokens = token_usage.cache_miss_tokens - token_usage.cache_creation_tokens;
+
+    // Cache misses include cache writes; subtract writes for input reporting.
+    uint64_t input_tokens = token_usage.cache_miss_tokens - token_usage.cache_creation_tokens;
+
     SPDLOG_INFO("Estimated cost: ${} (user={} id={}, request={}, service={}, model={}) tokens: input={} cache_creation={} cache_read={} output={} cache_hit_rate={:.2f}%", formatted.str(), user.name, user.id, request_id, service, model, input_tokens, token_usage.cache_creation_tokens, token_usage.cache_hit_tokens, token_usage.output_tokens, cost::cache_hit_rate(token_usage) * 100.0);
 }
 
@@ -65,22 +51,23 @@ void record_request_cost(
     const std::optional<cost::TokenUsage>& token_usage,
     const User& user,
     request_id_t request_id,
-    const Service& service,
-    std::string_view model,
-    std::chrono::system_clock::time_point now) {
+    const providers::Provider& provider,
+    const providers::Model& model,
+    std::chrono::system_clock::time_point now,
+    const cost::Multiplier& multiplier) {
     if (!token_usage) {
         SPDLOG_WARN("Cost estimate unavailable: Failed to parse usage");
         return;
     }
 
-    auto amount = cost::calculate(service.name, model, *token_usage, now);
+    auto amount = cost::calculate(model, *token_usage, now, multiplier);
     if (!amount) {
         SPDLOG_WARN("Cost estimate unavailable");
         return;
     }
 
-    print_cost(*amount, user, request_id, service.name, model, *token_usage);
-    update_request(request_id, *amount);
+    print_cost(*amount, user, request_id, provider.name, model.name, *token_usage);
+    database::update_request(request_id, *amount);
 }
 
 // HTTP responses and route error handling.
@@ -276,10 +263,10 @@ void configure_response_receiver(
 int main(int argc, char** argv) {
     (void) pn::init();
     spdlog::cfg::load_env_levels();
-    if (argc > 1) return cli::run(argc, argv);
-    init();
+    if (argc > 1) return run_cli(argc, argv);
+    database::init();
 
-    SJSON::JSObject keys;
+    providers::Configuration configured;
     {
         std::ifstream keys_file("keys.json");
         if (!keys_file.is_open()) {
@@ -288,16 +275,17 @@ int main(int argc, char** argv) {
         }
 
         try {
-            keys = SJSON::Parse::string(std::string(std::istreambuf_iterator<char> {keys_file}, std::istreambuf_iterator<char> {})).object();
+            auto json = SJSON::Parse::string(std::string(std::istreambuf_iterator<char> {keys_file}, std::istreambuf_iterator<char> {}));
+            configured = providers::configure(std::move(json.object()));
         } catch (const std::exception& e) {
             SPDLOG_ERROR("Failed to parse keys.json: {}", e.what());
             return 1;
         }
     }
 
-    usage_page::Assets usage_assets;
+    UsagePageAssets usage_assets;
     try {
-        usage_assets = usage_page::load_assets();
+        usage_assets = load_usage_page_assets();
     } catch (const std::exception& e) {
         SPDLOG_ERROR("Failed to load usage page: {}", e.what());
         return 1;
@@ -315,27 +303,27 @@ int main(int argc, char** argv) {
     server.route("/usage.css",
         pw::Route {
             logged_route([&usage_assets](pw::Connection&, pw::Request& request) {
-                return usage_page::asset(request, usage_assets.css, "text/css; charset=utf-8");
+                return make_usage_asset_resp(request, usage_assets.css, "text/css; charset=utf-8");
             }),
         });
 
     server.route("/usage.js",
         pw::Route {
             logged_route([&usage_assets](pw::Connection&, pw::Request& request) {
-                return usage_page::asset(request, usage_assets.js, "text/javascript; charset=utf-8");
+                return make_usage_asset_resp(request, usage_assets.js, "text/javascript; charset=utf-8");
             }),
         });
 
     server.route("/usage",
         pw::Route {
             logged_route([&usage_assets](pw::Connection&, pw::Request& request) {
-                return usage_page::handle(usage_assets, request);
+                return handle_usage_request(usage_assets, request);
             }),
         });
 
     server.route("/chat/completions",
         pw::Route {
-            logged_route([&keys](pw::Connection&, pw::Request& inbound_req) {
+            logged_route([&configured](pw::Connection&, pw::Request& inbound_req) {
                 if (inbound_req.method != "POST") {
                     return make_basic_resp(405, {{"Allow", "POST"}});
                 }
@@ -347,7 +335,7 @@ int main(int argc, char** argv) {
                         return make_basic_resp(401);
                     }
 
-                    if (!(user = get_user_by_api_key(authorization_split.back()))) {
+                    if (!(user = database::get_user_by_api_key(authorization_split.back()))) {
                         return make_basic_resp(401);
                     }
                 } else {
@@ -365,27 +353,49 @@ int main(int argc, char** argv) {
                     return make_basic_resp(400);
                 }
 
-                std::string model;
+                std::string_view model;
                 if (auto model_it = req_body.find("model"); model_it != req_body.end() && model_it->second.is_string()) {
                     model = model_it->second.string();
                 } else {
                     return make_basic_resp(400, "Invalid model specified");
                 }
 
-                std::optional<Service> service = model_to_service(model);
-                if (!service) {
-                    return make_basic_resp(400, "Invalid model specified");
+                auto selection = providers::resolve(configured, model);
+                if (!selection) return make_basic_resp(400, "Invalid model specified");
+
+                if (!selection->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS)) {
+                    return make_basic_resp(400, "Model does not support Chat Completions");
                 }
 
-                outbound_req_headers["Authorization"] = "Bearer " + keys.at(service->name).string();
-                if (service->name == "deepseek") {
-                    req_body["user_id"] = user->name;
+                const auto* provider = selection->provider;
+                if (!provider->configured()) {
+                    return make_basic_resp(503, "Provider is not configured");
                 }
+
+                req_body["model"] = selection->model->name;
+
+                if (auto error = provider->prepare_request(providers::PROTOCOL_CHAT_COMPLETIONS,
+                        inbound_req.headers,
+                        outbound_req_headers,
+                        req_body,
+                        user->name)) {
+                    return make_basic_resp(400, std::string(*error));
+                }
+
+                auto multiplier = provider->multiplier(*selection->model);
+                if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
 
                 auto now = std::chrono::system_clock::now();
 
                 auto channel = std::make_shared<Channel<Message>>(8000);
-                pw::threadpool.schedule([user = std::move(*user), outbound_req_headers = std::move(outbound_req_headers), req_body = std::move(req_body), model = std::move(model), service = std::move(*service), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                pw::threadpool.schedule([user = std::move(*user),
+                                            outbound_req_headers = std::move(outbound_req_headers),
+                                            req_body = std::move(req_body),
+                                            definition = &provider->definition(),
+                                            selected_model = selection->model,
+                                            multiplier = *multiplier,
+                                            now,
+                                            channel = std::weak_ptr<Channel<Message>>(channel)]() {
                     bool sent_head = false;
                     std::expected<request_id_t, BeginRequestError> request_id;
                     auto handle_failure = [&]() {
@@ -393,11 +403,11 @@ int main(int argc, char** argv) {
                             if (!sent_head) send_basic_resp(*channel_locked, 500);
                             channel_locked->send(EndMessage {});
                         }
-                        if (request_id) end_request(*request_id, REQUEST_STATE_UNKNOWN);
+                        if (request_id) database::end_request(*request_id, REQUEST_STATE_UNKNOWN);
                     };
                     try {
                         UsageLimits usage_limits;
-                        if (!(request_id = begin_request(user.id, usage_limits, now))) {
+                        if (!(request_id = database::begin_request(user.id, usage_limits, now))) {
                             if (auto channel_locked = channel.lock()) {
                                 send_usage_error_resp(*channel_locked, request_id.error(), usage_limits);
                                 channel_locked->send(EndMessage {});
@@ -405,7 +415,7 @@ int main(int argc, char** argv) {
                             return;
                         }
 
-                        pw::SSEParser sse_parser([&user, &model, &service, now, request_id = *request_id](pw::SSEEvent event) -> bool {
+                        pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, request_id = *request_id](pw::SSEEvent event) -> bool {
                             if (event.type != "message") return false;
                             if (event.data == "[DONE]") return true;
 
@@ -419,29 +429,29 @@ int main(int argc, char** argv) {
                             }
 
                             if (auto usage_it = message.find("usage"); usage_it != message.end() && usage_it->second.is_object()) {
-                                record_request_cost(cost::from_chat_completions_usage(usage_it->second.object()), user, request_id, service, model, now);
+                                record_request_cost(cost::from_chat_completions_usage(usage_it->second.object()), user, request_id, *definition, *selected_model, now, multiplier);
                             }
 
                             return true;
                         });
 
                         SJSON::Parse json_parser;
-                        json_parser.listen("usage", [&user, &model, &service, now, request_id = *request_id](const SJSON::JSValue& usage) {
+                        json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
                             if (!usage.is_object()) {
                                 SPDLOG_WARN("Cost estimate unavailable");
                                 return;
                             }
-                            record_request_cost(cost::from_chat_completions_usage(usage.object()), user, request_id, service, model, now);
+                            record_request_cost(cost::from_chat_completions_usage(usage.object()), user, request_id, *definition, *selected_model, now, multiplier);
                         });
 
                         pw::Response inbound_resp;
                         configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
-                        if (pn::Status result = pw::fetch("POST", service.chat_completions_base_url + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                        if (pn::Status result = pw::fetch("POST", std::string(definition->chat_completions_base_url) + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
                                 channel_locked->send(EndMessage {});
                             }
-                            end_request(*request_id, REQUEST_STATE_INTERRUPTED);
+                            database::end_request(*request_id, REQUEST_STATE_INTERRUPTED);
                             return;
                         }
 
@@ -451,7 +461,7 @@ int main(int argc, char** argv) {
                             }
                             channel_locked->send(EndMessage {});
                         }
-                        end_request(*request_id, REQUEST_STATE_COMPLETED);
+                        database::end_request(*request_id, REQUEST_STATE_COMPLETED);
                     } catch (const std::exception& e) {
                         SPDLOG_ERROR("Proxy request failed: {}", e.what());
                         handle_failure();
@@ -468,7 +478,7 @@ int main(int argc, char** argv) {
 
     server.route("/v1/messages",
         pw::Route {
-            logged_route([&keys](pw::Connection&, pw::Request& inbound_req) {
+            logged_route([&configured](pw::Connection&, pw::Request& inbound_req) {
                 if (inbound_req.method != "POST") {
                     return make_basic_resp(405, {{"Allow", "POST"}});
                 }
@@ -480,11 +490,11 @@ int main(int argc, char** argv) {
                         return make_basic_resp(401);
                     }
 
-                    if (!(user = get_user_by_api_key(authorization_split.back()))) {
+                    if (!(user = database::get_user_by_api_key(authorization_split.back()))) {
                         return make_basic_resp(401);
                     }
                 } else if (auto api_key_it = inbound_req.headers.find("x-api-key"); api_key_it != inbound_req.headers.end()) {
-                    if (!(user = get_user_by_api_key(api_key_it->second))) {
+                    if (!(user = database::get_user_by_api_key(api_key_it->second))) {
                         return make_basic_resp(401);
                     }
                 } else {
@@ -505,30 +515,49 @@ int main(int argc, char** argv) {
                     return make_basic_resp(400);
                 }
 
-                std::string model;
+                std::string_view model;
                 if (auto model_it = req_body.find("model"); model_it != req_body.end() && model_it->second.is_string()) {
                     model = model_it->second.string();
                 } else {
                     return make_basic_resp(400, "Invalid model specified");
                 }
 
-                std::optional<Service> service = model_to_service(model);
-                if (!service) {
-                    return make_basic_resp(400, "Invalid model specified");
+                auto selection = providers::resolve(configured, model);
+                if (!selection) return make_basic_resp(400, "Invalid model specified");
+
+                if (!selection->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES)) {
+                    return make_basic_resp(400, "Model does not support Anthropic Messages");
                 }
 
-                outbound_req_headers["x-api-key"] = keys.at(service->name).string();
-                if (service->name == "deepseek") {
-                    auto& metadata = req_body["metadata"];
-                    if (metadata.is_null()) metadata = SJSON::JSObject {};
-                    if (!metadata.is_object()) return make_basic_resp(400, "Invalid metadata specified");
-                    metadata.object()["user_id"] = user->name;
+                const auto* provider = selection->provider;
+                if (!provider->configured()) {
+                    return make_basic_resp(503, "Provider is not configured");
                 }
+
+                req_body["model"] = selection->model->name;
+
+                if (auto error = provider->prepare_request(providers::PROTOCOL_ANTHROPIC_MESSAGES,
+                        inbound_req.headers,
+                        outbound_req_headers,
+                        req_body,
+                        user->name)) {
+                    return make_basic_resp(400, std::string(*error));
+                }
+
+                auto multiplier = provider->multiplier(*selection->model);
+                if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
 
                 auto now = std::chrono::system_clock::now();
 
                 auto channel = std::make_shared<Channel<Message>>(8000);
-                pw::threadpool.schedule([user = std::move(*user), outbound_req_headers = std::move(outbound_req_headers), req_body = std::move(req_body), model = std::move(model), service = std::move(*service), now, channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                pw::threadpool.schedule([user = std::move(*user),
+                                            outbound_req_headers = std::move(outbound_req_headers),
+                                            req_body = std::move(req_body),
+                                            definition = &provider->definition(),
+                                            selected_model = selection->model,
+                                            multiplier = *multiplier,
+                                            now,
+                                            channel = std::weak_ptr<Channel<Message>>(channel)]() {
                     bool sent_head = false;
                     std::expected<request_id_t, BeginRequestError> request_id;
                     auto handle_failure = [&]() {
@@ -536,11 +565,11 @@ int main(int argc, char** argv) {
                             if (!sent_head) send_basic_resp(*channel_locked, 500);
                             channel_locked->send(EndMessage {});
                         }
-                        if (request_id) end_request(*request_id, REQUEST_STATE_UNKNOWN);
+                        if (request_id) database::end_request(*request_id, REQUEST_STATE_UNKNOWN);
                     };
                     try {
                         UsageLimits usage_limits;
-                        if (!(request_id = begin_request(user.id, usage_limits, now))) {
+                        if (!(request_id = database::begin_request(user.id, usage_limits, now))) {
                             if (auto channel_locked = channel.lock()) {
                                 send_usage_error_resp(*channel_locked, request_id.error(), usage_limits);
                                 channel_locked->send(EndMessage {});
@@ -548,7 +577,7 @@ int main(int argc, char** argv) {
                             return;
                         }
 
-                        pw::SSEParser sse_parser([&user, &model, &service, now, request_id = *request_id, current_usage = SJSON::JSObject {}](pw::SSEEvent event) mutable -> bool {
+                        pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, request_id = *request_id, current_usage = SJSON::JSObject {}](pw::SSEEvent event) mutable -> bool {
                             if (event.type != "message_start" && event.type != "message_delta") return true;
 
                             SJSON::JSObject message;
@@ -575,28 +604,28 @@ int main(int argc, char** argv) {
                             for (const auto& [field, value] : usage_it->second.object()) {
                                 current_usage[field] = value;
                             }
-                            record_request_cost(cost::from_anthropic_usage(current_usage), user, request_id, service, model, now);
+                            record_request_cost(cost::from_anthropic_usage(current_usage), user, request_id, *definition, *selected_model, now, multiplier);
 
                             return true;
                         });
 
                         SJSON::Parse json_parser;
-                        json_parser.listen("usage", [&user, &model, &service, now, request_id = *request_id](const SJSON::JSValue& usage) {
+                        json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
                             if (!usage.is_object()) {
                                 SPDLOG_WARN("Cost estimate unavailable");
                                 return;
                             }
-                            record_request_cost(cost::from_anthropic_usage(usage.object()), user, request_id, service, model, now);
+                            record_request_cost(cost::from_anthropic_usage(usage.object()), user, request_id, *definition, *selected_model, now, multiplier);
                         });
 
                         pw::Response inbound_resp;
                         configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
-                        if (pn::Status result = pw::fetch("POST", service.anthropic_messages_base_url + "/v1/messages", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                        if (pn::Status result = pw::fetch("POST", std::string(definition->anthropic_messages_base_url) + "/v1/messages", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
                                 channel_locked->send(EndMessage {});
                             }
-                            end_request(*request_id, REQUEST_STATE_INTERRUPTED);
+                            database::end_request(*request_id, REQUEST_STATE_INTERRUPTED);
                             return;
                         }
 
@@ -606,7 +635,7 @@ int main(int argc, char** argv) {
                             }
                             channel_locked->send(EndMessage {});
                         }
-                        end_request(*request_id, REQUEST_STATE_COMPLETED);
+                        database::end_request(*request_id, REQUEST_STATE_COMPLETED);
                     } catch (const std::exception& e) {
                         SPDLOG_ERROR("Proxy request failed: {}", e.what());
                         handle_failure();

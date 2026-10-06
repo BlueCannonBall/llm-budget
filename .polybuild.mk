@@ -94,6 +94,9 @@ obj/main_0$(obj_ext): ./main.cpp .polybuild.mk Polyweb/polyweb.hpp Polyweb/Polyn
 	@$(cpp_compiler) $(compile_only_flag) "$<" $(cpp_compilation_flags) "$(obj_path_flag)$@"
 	@printf "\033[1m[POLYBUILD]\033[0m %s\n" "Finished compiling $@ from $<!"
 
+obj/main_0$(obj_ext): providers.hpp provider_config.hpp configured_provider.hpp providers/deepseek.hpp providers/opencode_go.hpp providers/openai.hpp money.hpp
+obj/cli_0$(obj_ext): money.hpp
+
 obj/client_0$(obj_ext): Polyweb/client.cpp .polybuild.mk Polyweb/polyweb.hpp Polyweb/Polynet/polynet.hpp Polyweb/Polynet/error.hpp Polyweb/Polynet/string.hpp Polyweb/Polynet/tls.hpp Polyweb/error.hpp Polyweb/string.hpp Polyweb/threadpool.hpp
 	@printf "\033[1m[POLYBUILD]\033[0m %s\n" "Compiling $@ from $<..."
 	@mkdir -p "obj"

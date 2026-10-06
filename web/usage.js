@@ -12,129 +12,134 @@ const message = document.getElementById("usage-message");
 const submit = form.querySelector('button[type="submit"]');
 const storageKey = "llm-budget.usage-api-key";
 const formatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short"
+    dateStyle: "medium",
+    timeStyle: "short"
 });
 let storageAvailable = true;
 let successfulKey = "";
 let loading = false;
 
 function localizeTimes() {
-  for (const timestamp of result.querySelectorAll("time[datetime]")) {
-    const date = new Date(timestamp.dateTime);
-    if (!Number.isNaN(date.getTime())) timestamp.textContent = formatter.format(date);
-  }
-  const heading = result.querySelector("#reset-timezone");
-  if (heading) heading.textContent = `Reset (${formatter.resolvedOptions().timeZone})`;
+    for (const timestamp of result.querySelectorAll("time[datetime]")) {
+        const date = new Date(timestamp.dateTime);
+        if (!Number.isNaN(date.getTime())) timestamp.textContent = formatter.format(date);
+    }
+
+    const heading = result.querySelector("#reset-timezone");
+    if (heading) heading.textContent = `Reset (${formatter.resolvedOptions().timeZone})`;
 }
 
 function updateControls() {
-  const hasUsage = Boolean(result.querySelector("table"));
-  settingsLabel.textContent = hasUsage ? "Key settings" : "API key";
-  refresh.hidden = !hasUsage || !keyInput.value;
+    const hasUsage = Boolean(result.querySelector("table"));
+    settingsLabel.textContent = hasUsage ? "Key settings" : "API key";
+    refresh.hidden = !hasUsage || !keyInput.value;
 }
 
 function setLoading(value) {
-  loading = value;
-  submit.disabled = value;
-  refresh.disabled = value;
-  forget.disabled = value;
-  keyInput.disabled = value;
-  remember.disabled = value || !storageAvailable;
-  result.setAttribute("aria-busy", String(value));
+    loading = value;
+    submit.disabled = value;
+    refresh.disabled = value;
+    forget.disabled = value;
+    keyInput.disabled = value;
+    remember.disabled = value || !storageAvailable;
+    result.setAttribute("aria-busy", String(value));
 }
 
 function removeSavedKey() {
-  remember.checked = false;
-  try {
-    localStorage.removeItem(storageKey);
-    return "";
-  } catch {
-    return "Browser storage is unavailable. Clear this site's browser data to remove any saved key.";
-  }
+    remember.checked = false;
+
+    try {
+        localStorage.removeItem(storageKey);
+        return "";
+    } catch {
+        return "Browser storage is unavailable. Clear this site's browser data to remove any saved key.";
+    }
 }
 
 function saveSuccessfulKey() {
-  if (!remember.checked || !successfulKey || keyInput.value !== successfulKey) return "";
-  try {
-    localStorage.setItem(storageKey, successfulKey);
-    return "";
-  } catch {
-    remember.checked = false;
-    return "Usage loaded, but browser storage is unavailable. The key could not be remembered.";
-  }
+    if (!remember.checked || !successfulKey || keyInput.value !== successfulKey) return "";
+
+    try {
+        localStorage.setItem(storageKey, successfulKey);
+        return "";
+    } catch {
+        remember.checked = false;
+        return "Usage loaded, but browser storage is unavailable. The key could not be remembered.";
+    }
 }
 
 async function showUsage() {
-  if (loading) return;
-  const apiKey = keyInput.value;
-  setLoading(true);
-  message.textContent = "Loading usage...";
-  try {
-    const response = await fetch(form.action, {
-      method: "POST",
-      headers: {"Content-Type": "application/x-www-form-urlencoded"},
-      body: new URLSearchParams({api_key: apiKey}),
-      cache: "no-store"
-    });
-    const page = new DOMParser().parseFromString(await response.text(), "text/html");
-    const details = page.getElementById("usage-result");
+    if (loading) return;
 
-    if (response.status === 401) {
-      successfulKey = "";
-      const storageMessage = removeSavedKey();
-      result.replaceChildren();
-      if (details) result.append(...details.childNodes);
-      settings.open = true;
-      message.textContent = storageMessage || "The API key is invalid. Enter a valid key to view usage.";
-    } else if (!details || (response.ok && !details.querySelector("table"))) {
-      throw new Error("Unexpected usage response");
-    } else if (response.ok) {
-      result.replaceChildren(...details.childNodes);
-      successfulKey = apiKey;
-      message.textContent = saveSuccessfulKey();
-      settings.open = false;
-      localizeTimes();
-    } else {
-      result.replaceChildren(...details.childNodes);
-      settings.open = true;
-      message.textContent = "Could not load usage. Check your key and try again.";
+    const apiKey = keyInput.value;
+    setLoading(true);
+    message.textContent = "Loading usage...";
+
+    try {
+        const response = await fetch(form.action, {
+            method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded"},
+            body: new URLSearchParams({api_key: apiKey}),
+            cache: "no-store"
+        });
+        const page = new DOMParser().parseFromString(await response.text(), "text/html");
+        const details = page.getElementById("usage-result");
+
+        if (response.status === 401) {
+            successfulKey = "";
+            const storageMessage = removeSavedKey();
+            result.replaceChildren();
+            if (details) result.append(...details.childNodes);
+            settings.open = true;
+            message.textContent = storageMessage || "The API key is invalid. Enter a valid key to view usage.";
+        } else if (!details || (response.ok && !details.querySelector("table"))) {
+            throw new Error("Unexpected usage response");
+        } else if (response.ok) {
+            result.replaceChildren(...details.childNodes);
+            successfulKey = apiKey;
+            message.textContent = saveSuccessfulKey();
+            settings.open = false;
+            localizeTimes();
+        } else {
+            result.replaceChildren(...details.childNodes);
+            settings.open = true;
+            message.textContent = "Could not load usage. Check your key and try again.";
+        }
+    } catch {
+        settings.open = true;
+        message.textContent = "Could not load usage. Please try again.";
+    } finally {
+        setLoading(false);
+        updateControls();
     }
-  } catch {
-    settings.open = true;
-    message.textContent = "Could not load usage. Please try again.";
-  } finally {
-    setLoading(false);
-    updateControls();
-  }
 }
 
 form.addEventListener("submit", event => {
-  event.preventDefault();
-  showUsage();
+    event.preventDefault();
+    showUsage();
 });
 
 refresh.addEventListener("click", () => {
-  if (!form.checkValidity()) {
-    settings.open = true;
-    form.reportValidity();
-    return;
-  }
-  showUsage();
+    if (!form.checkValidity()) {
+        settings.open = true;
+        form.reportValidity();
+        return;
+    }
+    showUsage();
 });
 
 forget.addEventListener("click", () => {
-  message.textContent = removeSavedKey();
-  keyInput.value = "";
-  successfulKey = "";
-  result.replaceChildren();
-  settings.open = true;
-  updateControls();
-  keyInput.focus();
+    message.textContent = removeSavedKey();
+    keyInput.value = "";
+    successfulKey = "";
+    result.replaceChildren();
+    settings.open = true;
+    updateControls();
+    keyInput.focus();
 });
 
 remember.addEventListener("change", () => {
-  message.textContent = remember.checked ? saveSuccessfulKey() : removeSavedKey();
+    message.textContent = remember.checked ? saveSuccessfulKey() : removeSavedKey();
 });
 
 keyInput.addEventListener("input", updateControls);
@@ -143,15 +148,15 @@ document.getElementById("remember-controls").hidden = false;
 localizeTimes();
 if (result.querySelector("table")) settings.open = false;
 try {
-  const savedKey = localStorage.getItem(storageKey);
-  if (savedKey) {
-    keyInput.value = savedKey;
-    remember.checked = true;
-    showUsage();
-  }
+    const savedKey = localStorage.getItem(storageKey);
+    if (savedKey) {
+        keyInput.value = savedKey;
+        remember.checked = true;
+        showUsage();
+    }
 } catch {
-  storageAvailable = false;
-  remember.disabled = true;
-  message.textContent = "Browser storage is unavailable. You can still enter a key to view usage.";
+    storageAvailable = false;
+    remember.disabled = true;
+    message.textContent = "Browser storage is unavailable. You can still enter a key to view usage.";
 }
 updateControls();

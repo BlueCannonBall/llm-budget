@@ -44,18 +44,20 @@ enum BeginRequestError {
     BEGIN_REQUEST_ERROR_BOTH_LIMITS,
 };
 
-void init();
+namespace database {
+    void init();
 
-user_id_t make_user(pn::StringView name, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars, std::string& api_key);
-std::optional<User> get_user(user_id_t id);
-std::optional<User> get_user_by_api_key(pn::StringView api_key);
-std::optional<User> get_user_by_name(pn::StringView name);
-std::vector<User> list_users();
-std::optional<UsageLimits> get_usage_limits(user_id_t id);
-std::optional<UserUsage> get_user_usage(user_id_t id, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
-bool set_usage_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars);
-bool rotate_api_key(user_id_t id, std::string& api_key);
+    user_id_t make_user(pn::StringView name, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars, std::string& api_key);
+    std::optional<User> get_user(user_id_t id);
+    std::optional<User> get_user_by_api_key(pn::StringView api_key);
+    std::optional<User> get_user_by_name(pn::StringView name);
+    std::vector<User> list_users();
+    std::optional<UsageLimits> get_usage_limits(user_id_t id);
+    std::optional<UserUsage> get_user_usage(user_id_t id, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
+    bool set_usage_limits(user_id_t id, uint64_t five_hour_limit_nanodollars, uint64_t weekly_limit_nanodollars);
+    bool rotate_api_key(user_id_t id, std::string& api_key);
 
-std::expected<request_id_t, BeginRequestError> begin_request(user_id_t user_id, UsageLimits& usage_limits, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
-void update_request(request_id_t id, uint64_t cost_nanodollars);
-void end_request(request_id_t id, RequestState state, std::optional<uint64_t> cost_nanodollars = {}, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
+    std::expected<request_id_t, BeginRequestError> begin_request(user_id_t user_id, UsageLimits& usage_limits, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
+    void update_request(request_id_t id, uint64_t cost_nanodollars);
+    void end_request(request_id_t id, RequestState state, std::optional<uint64_t> cost_nanodollars = {}, std::chrono::system_clock::time_point time = std::chrono::system_clock::now());
+} // namespace database
