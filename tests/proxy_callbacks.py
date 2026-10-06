@@ -29,7 +29,27 @@ class Upstream(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         seen.append((self.headers["X-Test-Original-URL"], dict(self.headers), body))
-        if self.path.endswith("/messages"):
+        if self.path.endswith("/responses"):
+            usage = {"input_tokens": 300, "input_tokens_details": {"cached_tokens": 100},
+                     "output_tokens": 1000, "output_tokens_details": {"reasoning_tokens": 900}}
+            if body["model"] == "gpt-6.1-sol":
+                usage["input_tokens_details"]["cache_write_tokens"] = 50
+            response = {"id": "resp_local", "object": "response", "status": "completed",
+                        "output": [{"type": "message", "content": [{"type": "output_text", "text": "local response"}]}],
+                        "usage": usage}
+            if body.get("stream"):
+                terminal = body.get("metadata", {}).get("terminal", "completed")
+                response["status"] = terminal
+                event = {"type": "response." + terminal, "response": response}
+                # Initial null usage and output-item usage are not request totals.
+                prefix = ('event: response.created\ndata: {"type":"response.created","response":{"usage":null}}\n\n'
+                          'event: response.output_item.done\ndata: {"usage":{"input_tokens":999999}}\n\n'
+                          'event: response.output_text.delta\ndata: {"delta":"local response"}\n\n')
+                event_name = "" if body.get("metadata", {}).get("unnamed") else "event: " + event["type"] + "\n"
+                payload = (prefix + event_name + 'data: ' + json.dumps(event) + '\n\n').encode()
+            else:
+                payload = json.dumps(response).encode()
+        elif self.path.endswith("/messages"):
             usage = {"input_tokens": 200, "cache_read_input_tokens": 100,
                      "cache_creation_input_tokens": 5, "output_tokens": 1000}
             if body.get("stream"):
@@ -117,11 +137,15 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             else:
                 raise AssertionError("server did not start")
 
-            def request(model, route="/chat/completions", stream=False, user=0):
+            def request(model, route="/chat/completions", stream=False, user=0, metadata=None):
                 connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
                 headers = {"Content-Type": "application/json", "Authorization": "Bearer " + keys[user],
-                           "x-opencode-session": "conversation-1"}
-                connection.request("POST", route, json.dumps({"model": model, "messages": [], "stream": stream}), headers)
+                           "x-opencode-session": "conversation-1", "session-id": "codex-conversation-1", "thread-id": "codex-thread-1"}
+                body = {"model": model, "stream": stream}
+                body["input" if route == "/responses" else "messages"] = "local prompt" if route == "/responses" else []
+                if metadata is not None:
+                    body["metadata"] = metadata
+                connection.request("POST", route, json.dumps(body), headers)
                 response = connection.getresponse()
                 result = response.status, response.read()
                 connection.close()
@@ -174,11 +198,44 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][0] == "https://api.openai.com/v1/chat/completions"
             assert seen[-1][1]["Authorization"] == "Bearer test-openai"
 
+            status, payload = request("openai/gpt-4.1-mini", "/responses")
+            assert status == 200 and json.loads(payload)["output"][0]["content"][0]["text"] == "local response"
+            assert last_row() == 1690000
+            assert seen[-1][0] == "https://api.openai.com/v1/responses"
+            assert seen[-1][1]["Authorization"] == "Bearer test-openai"
+            assert seen[-1][2]["model"] == "gpt-4.1-mini" and seen[-1][2]["input"] == "local prompt"
+
+            for terminal, unnamed in (("completed", False), ("incomplete", False), ("failed", True)):
+                status, payload = request("openai/gpt-4.1-mini", "/responses", stream=True,
+                                          metadata={"terminal": terminal, "unnamed": unnamed})
+                assert status == 200 and b"local response" in payload
+                assert ('"type": "response.' + terminal + '"').encode() in payload
+                assert last_row() == 1690000, "Terminal usage must not double-count reasoning or event snapshots"
+
+            assert request("opencode-go/gpt-5.6-luna", "/responses", stream=True)[0] == 200
+            assert last_row() == 828000
+            assert seen[-1][0] == "https://opencode.ai/zen/go/v1/responses"
+            assert seen[-1][1]["Authorization"] == "Bearer test-go"
+            assert seen[-1][1]["x-opencode-session"] == "conversation-1"
+            assert seen[-1][1]["session-id"] == "codex-conversation-1"
+            assert seen[-1][1]["thread-id"] == "codex-thread-1"
+            assert seen[-1][2]["model"] == "gpt-5.6-luna"
+
+            assert request("openai/gpt-6.1-sol", "/responses", stream=True)[0] == 200
+            assert last_row() == 10435000, "Cache writes must replace ordinary input pricing, not add another input charge"
+            assert request("deepseek/deepseek-flash", "/responses", stream=True)[0] == 200
+            assert last_row() in (630300, 1260600)
+            assert seen[-1][0] == "https://api.deepseek.com/responses"
+            assert seen[-1][1]["Authorization"] == "Bearer test-deepseek"
+            assert seen[-1][2]["user"] == "alice"
+
             count = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
             calls = len(seen)
             assert request("opencode-go/minimax-m2.7")[0] == 400
             assert request("opencode-go/gpt-5.6-luna")[0] == 400
             assert request("not-a-model")[0] == 400
+            assert request("openai/gpt-5.5-pro")[0] == 400
+            assert request("opencode-go/glm-5.3-flash", "/responses")[0] == 400
             assert len(seen) == calls
             assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count
 
@@ -209,16 +266,17 @@ namespace providers {
             .name = "pricing-fixture",
             .chat_completions_base_url = "http://127.0.0.1",
             .anthropic_messages_base_url = "http://127.0.0.1",
+            .responses_base_url = "http://127.0.0.1",
         };
         inline static constexpr Model model_catalog[] {
             {
                 .name = "unpriced",
-                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES,
+                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES,
                 .rates = {.input = 150'000, .cached_read = 3'000, .output = 600'000, .cached_write = 150'000},
             },
             {
                 .name = "free",
-                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES,
+                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES,
                 .rates = {.input = 150'000, .cached_read = 3'000, .output = 600'000, .cached_write = 150'000},
             },
         };
@@ -243,6 +301,9 @@ namespace providers {
     Configuration configure_with_pricing_fixture(SJSON::JSObject keys) {
         auto configured = configure(std::move(keys));
         configured.front() = std::make_unique<PricingFixtureProvider>();
+        for (auto& provider : configured) {
+            if (provider->definition().name == "openai") provider = std::make_unique<OpenAIProvider>();
+        }
         return configured;
     }
 }
@@ -271,17 +332,21 @@ namespace providers {
 
             count = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
             calls = len(seen)
-            for route in ("/chat/completions", "/v1/messages"):
+            for route in ("/chat/completions", "/responses"):
+                assert request("openai/gpt-4.1-mini", route)[0] == 503
+            assert len(seen) == calls
+            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count
+            for route in ("/chat/completions", "/v1/messages", "/responses"):
                 status, body = request("pricing-fixture/unpriced", route)
                 assert status == 503, (status, body)
                 assert len(seen) == calls, "Unpriced request reached upstream"
                 assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count
 
-            for route in ("/chat/completions", "/v1/messages"):
+            for route in ("/chat/completions", "/v1/messages", "/responses"):
                 assert request("pricing-fixture/free", route)[0] == 200
                 assert last_row() == 0, "A resolved zero multiplier must remain valid"
-            assert len(seen) == calls + 2
-            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count + 2
+            assert len(seen) == calls + 3
+            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count + 3
         finally:
             server.terminate()
             server.communicate(timeout=5)
@@ -291,4 +356,4 @@ namespace providers {
         upstream.server_close()
         thread.join(timeout=5)
 
-print("PASS: real proxy routing, JSON/SSE accounting, budget limits, unpriced rejection without dispatch/rows, and valid zero multipliers")
+print("PASS: all three proxy protocols, Responses JSON/terminal SSE accounting, budget limits, unavailable providers/pricing without dispatch or rows, and valid zero multipliers")

@@ -1,7 +1,7 @@
 # LLM Budget
 
 An LLM API proxy and budget limiter for DeepSeek, OpenCode Go, and selected OpenAI
-models. It supports OpenAI Chat Completions and Anthropic Messages formats,
+models. It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages formats,
 authenticates callers with per-user API keys, and rejects new requests when a
 user's five-hour or weekly dollar budget is exhausted. Direct API requests count
 estimated token cost; Go requests count an allocated share of one shared subscription.
@@ -42,6 +42,8 @@ scope with `Channel`. Persistence functions and implementation details belong to
 `database::` qualification; there is no `init_db` alias, umbrella namespace, or
 compatibility alias. JavaScript follows `lux/index.js`: camelCase custom identifiers
 and four-space indentation. Native DOM API names and wire-format fields are unchanged.
+Raw SQL bodies are indented one level inside their C++ statements; raw-string
+closing delimiters align with the statement, including inside namespaces.
 
 The server loads data and page assets from the current working directory, so run
 it from the directory that holds them:
@@ -87,12 +89,13 @@ server. Provider keys are loaded once at startup, so changes require a restart.
 
 ## Proxy
 
-Both routes forward JSON to the provider selected by the request's model:
+All three routes forward JSON to the provider selected by the request's model:
 
 | Local route | User authentication | Available providers |
 | --- | --- | --- |
-| `POST /chat/completions` | `Authorization: Bearer <user API key>` | DeepSeek, Go Chat models, OpenAI Mini models |
+| `POST /chat/completions` | `Authorization: Bearer <user API key>` | DeepSeek, Go Chat models, OpenAI Chat-capable models |
 | `POST /v1/messages` | `x-api-key: <user API key>` or Bearer authorization | DeepSeek, Go Messages models |
+| `POST /responses` | `Authorization: Bearer <user API key>` | DeepSeek, Go Responses models, OpenAI models |
 
 Provider-qualified names pin routing without ambiguity:
 
@@ -100,21 +103,63 @@ Provider-qualified names pin routing without ambiguity:
 deepseek/deepseek-flash
 opencode-go/deepseek-v4-flash
 opencode-go/minimax-m2.7
+opencode-go/gpt-5.6-luna
 openai/gpt-4.1-mini
 ```
 
 The proxy replaces the outbound `model` with the upstream model ID. Unqualified
 `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
 models require qualification. There is no automatic fallback to another provider.
-Each concrete provider owns its routing/pricing catalog in `providers/`: two
-direct DeepSeek models, 30 Go entries, and `openai/gpt-4.1-mini` /
-`openai/gpt-4o-mini`.
-Go entries only accept their documented native protocol. Responses-only models
-are cataloged for pricing but cannot be requested through either local route.
+Each concrete provider owns its routing/pricing catalog in `providers/`. Checked
+October 6, 2026:
 
-Use `http://127.0.0.1:8787` as the SDK base URL for either format. Do not append
-`/v1` or `/anthropic`; the SDK supplies the route path. OpenAI Responses is not
-implemented.
+- **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
+  `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
+  aliases and old Chat/Reasoner IDs are not separate catalog entries.
+  Sources: [models/pricing](https://api-docs.deepseek.com/quick_start/pricing/),
+  [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
+- **OpenCode Go:** all 30 [documented models](https://opencode.ai/v2/docs/console/go),
+  with their native protocols, token rates, long-context tiers, and both Go/Go Plus
+  allowances. GPT Luna, Grok, and Muse Spark use Responses; Qwen and MiniMax use
+  Messages; the remaining models use Chat Completions.
+- **OpenAI:** 35 text/coding models, with endpoint support checked against each
+  [model page](https://developers.openai.com/api/docs/models) and standard rates
+  from [pricing](https://developers.openai.com/api/docs/pricing):
+
+| Family | Model IDs (prefix with `openai/`) |
+| --- | --- |
+| GPT-6 | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna` |
+| GPT-5.6 | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
+| GPT-5.5 / 5.4 | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4-pro` |
+| GPT-5.2 / 5.1 / 5 | `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-pro` |
+| Codex | `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.1-codex-mini`, `gpt-5-codex` |
+| GPT-4 | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini` |
+| Reasoning | `o3`, `o3-pro`, `o4-mini`, `o3-mini` |
+
+All listed OpenAI models support Responses. Codex, GPT Pro, and `o3-pro` models
+are Responses-only; the others also support Chat Completions. Prefer Responses
+for tools: individual models can restrict Chat Completions features even when
+the endpoint itself is supported. Published long-context prices apply to the
+whole request above 272,000 input tokens where a model defines that tier.
+Models without a published cached-input discount use ordinary input pricing.
+Audio, image generation, embeddings, research/tool-fee models, restricted cyber
+models, dated snapshots, and moving ChatGPT aliases are intentionally excluded:
+this is a useful text/coding catalog, not every OpenAI product.
+
+Use `http://127.0.0.1:8787` as the SDK base URL for all three formats. Do not append
+`/v1` or `/anthropic`; the SDK supplies the route path. For example:
+
+```sh
+curl http://127.0.0.1:8787/responses \
+    -H "Authorization: Bearer $LLM_BUDGET_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"opencode-go/gpt-5.6-luna","input":"Explain this code","stream":true}'
+```
+
+Responses request fields are forwarded without protocol conversion; only the
+provider-qualified model name is replaced. Both JSON and SSE responses are
+passed through. This endpoint implements response creation, not retrieval,
+deletion, cancellation, compaction, or WebSocket transport.
 
 - Missing, malformed, or unrecognized user credentials get `401`. On the
   Messages route, `Authorization` takes precedence if both headers are supplied.
@@ -127,14 +172,17 @@ implemented.
   scheduling upstream work or creating a request row. A resolved zero multiplier
   is valid and records zero cost; normal user budget admission still applies.
 - Caller credentials are replaced with the selected provider key from
-  `keys.json`: Bearer authorization for Chat Completions, `x-api-key` for Messages.
+  `keys.json`: Bearer authorization for Chat Completions and Responses, `x-api-key` for Messages.
 - Go requests preserve the caller's `User-Agent`, falling back to `llm-budget/1.0`
-  when it is absent or empty. Both `x-opencode-session` and Claude Code's
-  `X-Claude-Code-Session-Id` are forwarded unchanged when present; neither is
-  translated into the other. See [Go's client guidance](https://opencode.ai/docs/go/#where-can-i-use-it)
-  and [Claude Code's request headers](https://code.claude.com/docs/en/llm-gateway#request-headers).
-- For direct DeepSeek upstream user isolation, Chat Completions sets `user_id` and Messages sets
-  `metadata.user_id` to the authenticated user's name, overriding caller-supplied
+  when it is absent or empty. `x-opencode-session`, Claude Code's
+  `X-Claude-Code-Session-Id`, and Codex's `session-id` and `thread-id` are forwarded
+  unchanged when present; they are not translated into one another. See
+  [Go's client guidance](https://opencode.ai/v2/docs/console/go#where-can-i-use-it),
+  [Claude Code's request headers](https://code.claude.com/docs/en/llm-gateway#request-headers),
+  and [Codex's session headers](https://github.com/openai/codex/pull/22193).
+- For direct DeepSeek upstream user isolation, Chat Completions sets `user_id`,
+  Responses sets `user`, and Messages sets `metadata.user_id` to the authenticated
+  user's name, overriding caller-supplied
   values. Other Messages metadata is preserved; missing or null metadata is
   created, and non-object metadata gets `400`. Names are forwarded unchanged;
   the CLI does not validate upstream user-ID requirements.
@@ -142,7 +190,7 @@ implemented.
   not forwarded.
 - The upstream response is streamed back as received, with `Content-Type` and
   `Retry-After` passed through. Responses are capped at 32,000,000 bytes.
-- Both upstream fetches use a 120-second socket read timeout and a 30-second
+- All upstream fetches use a 120-second socket read timeout and a 30-second
   send timeout. The read timeout bounds inactivity, not total stream duration.
   A fetch failure returns `502` if response headers have not been sent; otherwise
   it closes the stream. The request is recorded as interrupted.
@@ -297,7 +345,7 @@ native protocols and `SCHEDULE_*` constants for schedules.
 
 `cost.hpp` normalizes API usage and calculates token costs, applying the
 provider's resolved exact multiplier before rounding. It has no subscription
-plan or allowance logic. Both routes require a resolved multiplier before
+plan or allowance logic. All routes require a resolved multiplier before
 dispatch. Background accounting reads static model/provider metadata and that
 multiplier value; it does not retain configured-provider objects or make virtual
 calls for streamed usage events.
@@ -363,10 +411,23 @@ new requests only; previously stored request costs are not recalculated.
 - Chat Completions supports DeepSeek's explicit cache buckets and OpenAI's nested
   `prompt_tokens_details.cached_tokens`; uncached input derives from total input.
   Conflicting counts are rejected. Reasoning tokens are already included in output.
+  Nested `prompt_tokens_details.cache_write_tokens` counts are charged at the
+  model's cache-write rate, replacing ordinary input pricing for those tokens.
 - Messages input, cache reads, and cache writes are priced separately. Streaming
   combines initial `message_start.message.usage` with later `message_delta.usage`;
   supplied fields replace earlier counts, omitted fields remain, and cumulative
   counts are never added together.
+- Responses uses `input_tokens`, `input_tokens_details.cached_tokens`,
+  `input_tokens_details.cache_write_tokens`, and `output_tokens`. Reads and writes
+  are subsets of total input: writes use their own rate, not an additive charge.
+  Reasoning tokens are already included in output and are not added again. JSON uses top-level
+  `usage`; SSE reads `response.usage` from `response.completed`,
+  `response.incomplete`, and `response.failed`, including unnamed SSE events with
+  a JSON `type`. Initial null usage and output-item events do not overwrite the
+  request estimate. See [Responses streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events).
+  See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+  for cache-write accounting on GPT-5.6 and later models. Invalid counts or cache
+  reads plus writes exceeding total input are rejected for accounting.
 - `cost::calculate()` returns one request cost. The proxy passes it to the existing
   `database::update_request()` function, which stores it in `cost_nanodollars`.
   The database schema and stored costs are unchanged; no migration or additional
@@ -377,9 +438,13 @@ new requests only; previously stored request costs are not recalculated.
 
 ## Known limitations
 
-- Messages SSE `error` events and the terminal `message_stop` event are not used
-  to determine request state. A stream that errors or closes before its terminal
-  event can be marked completed if the HTTP fetch succeeds.
+- Request state tracks HTTP transport completion, not model outcome. Messages
+  `error`/`message_stop` and Responses terminal event types do not determine the
+  stored state. A failed model response or a stream that closes before its
+  terminal event can be marked completed if the HTTP fetch succeeds.
+- Background Responses can return before usage is available; later polling is
+  not proxied or accounted for. Tool fees and nonstandard service-tier pricing
+  are not included in the text-token estimate.
 - Proxy-generated errors are plain text, not provider-native JSON error objects.
 - Missing usage or an unavailable pricing schedule can leave a dispatched request
   without a recorded cost. The multiplier admission check does not eliminate these
@@ -404,10 +469,11 @@ These tests use temporary directories and dummy keys. None contact external prov
 `proxy_callbacks.py` links the built server objects with a test-only transport
 destination redirect, then exercises the real proxy against a local HTTP fixture.
 It checks provider-qualified routing, upstream authentication, model rewriting,
-fragmented JSON/SSE usage, Go cost allocation, unsupported protocols, and admission
-limits using the existing stored request cost rather than Go's nominal usage value.
+fragmented JSON/SSE usage (including Responses terminal snapshots), Go cost
+allocation, unsupported protocols, unavailable providers/pricing, valid zero
+multipliers, and admission limits using stored rather than nominal Go costs.
 
-`proxy_limits.py` exercises both proxy routes against the real local server,
+`proxy_limits.py` exercises all three proxy routes against the real local server,
 checking exhausted five-hour, weekly, and combined budgets, reset-based
 `Retry-After`, and disabled (`403`) budgets without contacting the upstream.
 
@@ -419,7 +485,7 @@ The three C++ tests are standalone `main()` programs, built with the same includ
 paths as the server:
 
 ```sh
-g++ -std=c++23 -O2 -I. tests/cost.cpp SJSON/src/value.cpp -o test_cost
+g++ -std=c++23 -O2 -I. tests/cost.cpp SJSON/src/value.cpp Polyweb/string.cpp -o test_cost
 ./test_cost
 g++ -std=c++23 -O2 -pthread -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE \
     -I. -ISJSON/src -Ispdlog/include tests/database.cpp database.cpp \

@@ -321,160 +321,188 @@ int main(int argc, char** argv) {
             }),
         });
 
-    server.route("/chat/completions",
-        pw::Route {
-            logged_route([&configured](pw::Connection&, pw::Request& inbound_req) {
-                if (inbound_req.method != "POST") {
-                    return make_basic_resp(405, {{"Allow", "POST"}});
-                }
-
-                std::optional<User> user;
-                if (auto authorization_it = inbound_req.headers.find("Authorization"); authorization_it != inbound_req.headers.end()) {
-                    auto authorization_split = pw::string::split_and_trim(authorization_it->second, ' ');
-                    if (authorization_split.size() != 2 || !pw::string::iequals(authorization_split.front(), "Bearer")) {
-                        return make_basic_resp(401);
+    for (auto protocol : {providers::PROTOCOL_CHAT_COMPLETIONS, providers::PROTOCOL_RESPONSES}) {
+        server.route(protocol == providers::PROTOCOL_RESPONSES ? "/responses" : "/chat/completions",
+            pw::Route {
+                logged_route([&configured, protocol](pw::Connection&, pw::Request& inbound_req) {
+                    if (inbound_req.method != "POST") {
+                        return make_basic_resp(405, {{"Allow", "POST"}});
                     }
 
-                    if (!(user = database::get_user_by_api_key(authorization_split.back()))) {
-                        return make_basic_resp(401);
-                    }
-                } else {
-                    return make_basic_resp(401);
-                }
-
-                pw::Headers outbound_req_headers = {{"Content-Type", "application/json"}};
-
-                SJSON::JSObject req_body;
-                try {
-                    req_body = SJSON::Parse::string(inbound_req.body_to_string()).object();
-                } catch (const SJSON::sjson_parse_error& e) {
-                    return make_basic_resp(400);
-                } catch (const std::bad_variant_access& e) {
-                    return make_basic_resp(400);
-                }
-
-                std::string_view model;
-                if (auto model_it = req_body.find("model"); model_it != req_body.end() && model_it->second.is_string()) {
-                    model = model_it->second.string();
-                } else {
-                    return make_basic_resp(400, "Invalid model specified");
-                }
-
-                auto selection = providers::resolve(configured, model);
-                if (!selection) return make_basic_resp(400, "Invalid model specified");
-
-                if (!selection->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS)) {
-                    return make_basic_resp(400, "Model does not support Chat Completions");
-                }
-
-                const auto* provider = selection->provider;
-                if (!provider->configured()) {
-                    return make_basic_resp(503, "Provider is not configured");
-                }
-
-                req_body["model"] = selection->model->name;
-
-                if (auto error = provider->prepare_request(providers::PROTOCOL_CHAT_COMPLETIONS,
-                        inbound_req.headers,
-                        outbound_req_headers,
-                        req_body,
-                        user->name)) {
-                    return make_basic_resp(400, std::string(*error));
-                }
-
-                auto multiplier = provider->multiplier(*selection->model);
-                if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
-
-                auto now = std::chrono::system_clock::now();
-
-                auto channel = std::make_shared<Channel<Message>>(8000);
-                pw::threadpool.schedule([user = std::move(*user),
-                                            outbound_req_headers = std::move(outbound_req_headers),
-                                            req_body = std::move(req_body),
-                                            definition = &provider->definition(),
-                                            selected_model = selection->model,
-                                            multiplier = *multiplier,
-                                            now,
-                                            channel = std::weak_ptr<Channel<Message>>(channel)]() {
-                    bool sent_head = false;
-                    std::expected<request_id_t, BeginRequestError> request_id;
-                    auto handle_failure = [&]() {
-                        if (auto channel_locked = channel.lock()) {
-                            if (!sent_head) send_basic_resp(*channel_locked, 500);
-                            channel_locked->send(EndMessage {});
+                    std::optional<User> user;
+                    if (auto authorization_it = inbound_req.headers.find("Authorization"); authorization_it != inbound_req.headers.end()) {
+                        auto authorization_split = pw::string::split_and_trim(authorization_it->second, ' ');
+                        if (authorization_split.size() != 2 || !pw::string::iequals(authorization_split.front(), "Bearer")) {
+                            return make_basic_resp(401);
                         }
-                        if (request_id) database::end_request(*request_id, REQUEST_STATE_UNKNOWN);
-                    };
+
+                        if (!(user = database::get_user_by_api_key(authorization_split.back()))) {
+                            return make_basic_resp(401);
+                        }
+                    } else {
+                        return make_basic_resp(401);
+                    }
+
+                    pw::Headers outbound_req_headers = {{"Content-Type", "application/json"}};
+
+                    SJSON::JSObject req_body;
                     try {
-                        UsageLimits usage_limits;
-                        if (!(request_id = database::begin_request(user.id, usage_limits, now))) {
+                        req_body = SJSON::Parse::string(inbound_req.body_to_string()).object();
+                    } catch (const SJSON::sjson_parse_error& e) {
+                        return make_basic_resp(400);
+                    } catch (const std::bad_variant_access& e) {
+                        return make_basic_resp(400);
+                    }
+
+                    std::string_view model;
+                    if (auto model_it = req_body.find("model"); model_it != req_body.end() && model_it->second.is_string()) {
+                        model = model_it->second.string();
+                    } else {
+                        return make_basic_resp(400, "Invalid model specified");
+                    }
+
+                    auto selection = providers::resolve(configured, model);
+                    if (!selection) return make_basic_resp(400, "Invalid model specified");
+
+                    if (!selection->model->supports(protocol)) {
+                        return make_basic_resp(400, protocol == providers::PROTOCOL_RESPONSES ? "Model does not support Responses" : "Model does not support Chat Completions");
+                    }
+
+                    const auto* provider = selection->provider;
+                    if (!provider->configured()) {
+                        return make_basic_resp(503, "Provider is not configured");
+                    }
+
+                    req_body["model"] = selection->model->name;
+
+                    if (auto error = provider->prepare_request(protocol,
+                            inbound_req.headers,
+                            outbound_req_headers,
+                            req_body,
+                            user->name)) {
+                        return make_basic_resp(400, std::string(*error));
+                    }
+
+                    auto multiplier = provider->multiplier(*selection->model);
+                    if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
+
+                    auto now = std::chrono::system_clock::now();
+
+                    auto channel = std::make_shared<Channel<Message>>(8000);
+                    pw::threadpool.schedule([user = std::move(*user),
+                                                outbound_req_headers = std::move(outbound_req_headers),
+                                                req_body = std::move(req_body),
+                                                definition = &provider->definition(),
+                                                selected_model = selection->model,
+                                                multiplier = *multiplier,
+                                                now,
+                                                protocol,
+                                                channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                        bool sent_head = false;
+                        std::expected<request_id_t, BeginRequestError> request_id;
+                        auto handle_failure = [&]() {
                             if (auto channel_locked = channel.lock()) {
-                                send_usage_error_resp(*channel_locked, request_id.error(), usage_limits);
+                                if (!sent_head) send_basic_resp(*channel_locked, 500);
                                 channel_locked->send(EndMessage {});
                             }
-                            return;
-                        }
-
-                        pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, request_id = *request_id](pw::SSEEvent event) -> bool {
-                            if (event.type != "message") return false;
-                            if (event.data == "[DONE]") return true;
-
-                            SJSON::JSObject message;
-                            try {
-                                message = SJSON::Parse::string(event.data).object();
-                            } catch (const SJSON::sjson_parse_error& e) {
-                                return false;
-                            } catch (const std::bad_variant_access& e) {
-                                return false;
-                            }
-
-                            if (auto usage_it = message.find("usage"); usage_it != message.end() && usage_it->second.is_object()) {
-                                record_request_cost(cost::from_chat_completions_usage(usage_it->second.object()), user, request_id, *definition, *selected_model, now, multiplier);
-                            }
-
-                            return true;
-                        });
-
-                        SJSON::Parse json_parser;
-                        json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
-                            if (!usage.is_object()) {
-                                SPDLOG_WARN("Cost estimate unavailable");
+                            if (request_id) database::end_request(*request_id, REQUEST_STATE_UNKNOWN);
+                        };
+                        try {
+                            UsageLimits usage_limits;
+                            if (!(request_id = database::begin_request(user.id, usage_limits, now))) {
+                                if (auto channel_locked = channel.lock()) {
+                                    send_usage_error_resp(*channel_locked, request_id.error(), usage_limits);
+                                    channel_locked->send(EndMessage {});
+                                }
                                 return;
                             }
-                            record_request_cost(cost::from_chat_completions_usage(usage.object()), user, request_id, *definition, *selected_model, now, multiplier);
-                        });
 
-                        pw::Response inbound_resp;
-                        configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
-                        if (pn::Status result = pw::fetch("POST", std::string(definition->chat_completions_base_url) + "/chat/completions", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                            pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, protocol, request_id = *request_id](pw::SSEEvent event) -> bool {
+                                auto is_terminal_response = [](std::string_view type) {
+                                    return type == "response.completed" || type == "response.incomplete" || type == "response.failed";
+                                };
+
+                                if (protocol == providers::PROTOCOL_RESPONSES) {
+                                    if (event.type != "message" && !is_terminal_response(event.type)) return true;
+                                } else {
+                                    if (event.type != "message") return false;
+                                    if (event.data == "[DONE]") return true;
+                                }
+
+                                SJSON::JSObject message;
+                                try {
+                                    message = SJSON::Parse::string(event.data).object();
+                                } catch (const SJSON::sjson_parse_error& e) {
+                                    return false;
+                                } catch (const std::bad_variant_access& e) {
+                                    return false;
+                                }
+
+                                const SJSON::JSObject* response = &message;
+                                if (protocol == providers::PROTOCOL_RESPONSES) {
+                                    if (!is_terminal_response(event.type)) {
+                                        auto type = message.find("type");
+                                        if (type == message.end() || !type->second.is_string() || !is_terminal_response(type->second.string())) return true;
+                                    }
+
+                                    auto reponse_it = message.find("response");
+                                    if (reponse_it == message.end() || !reponse_it->second.is_object()) return true;
+                                    response = &reponse_it->second.object();
+                                }
+
+                                if (auto usage_it = response->find("usage"); usage_it != response->end() && usage_it->second.is_object()) {
+                                    auto usage = (protocol == providers::PROTOCOL_RESPONSES) ? cost::from_responses_usage(usage_it->second.object()) : cost::from_chat_completions_usage(usage_it->second.object());
+                                    record_request_cost(usage, user, request_id, *definition, *selected_model, now, multiplier);
+                                }
+
+                                return true;
+                            });
+
+                            SJSON::Parse json_parser;
+                            json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, protocol, request_id = *request_id](const SJSON::JSValue& usage) {
+                                if (!usage.is_object()) {
+                                    SPDLOG_WARN("Cost estimate unavailable");
+                                    return;
+                                }
+                                auto tokens = protocol == providers::PROTOCOL_RESPONSES ? cost::from_responses_usage(usage.object()) : cost::from_chat_completions_usage(usage.object());
+                                record_request_cost(tokens, user, request_id, *definition, *selected_model, now, multiplier);
+                            });
+
+                            pw::Response inbound_resp;
+                            configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
+                            std::string upstream_url = protocol == providers::PROTOCOL_RESPONSES
+                                                           ? std::string(definition->responses_base_url) + "/responses"
+                                                           : std::string(definition->chat_completions_base_url) + "/chat/completions";
+                            if (pn::Status result = pw::fetch("POST", upstream_url, inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                                if (auto channel_locked = channel.lock()) {
+                                    if (!sent_head) send_basic_resp(*channel_locked, 502);
+                                    channel_locked->send(EndMessage {});
+                                }
+                                database::end_request(*request_id, REQUEST_STATE_INTERRUPTED);
+                                return;
+                            }
+
                             if (auto channel_locked = channel.lock()) {
-                                if (!sent_head) send_basic_resp(*channel_locked, 502);
+                                if (!sent_head) {
+                                    channel_locked->send(HeadMessage {inbound_resp.status_code, std::move(inbound_resp.headers)});
+                                }
                                 channel_locked->send(EndMessage {});
                             }
-                            database::end_request(*request_id, REQUEST_STATE_INTERRUPTED);
-                            return;
+                            database::end_request(*request_id, REQUEST_STATE_COMPLETED);
+                        } catch (const std::exception& e) {
+                            SPDLOG_ERROR("Proxy request failed: {}", e.what());
+                            handle_failure();
+                        } catch (...) {
+                            SPDLOG_ERROR("Proxy request failed with a non-standard exception");
+                            handle_failure();
                         }
+                    },
+                        true);
 
-                        if (auto channel_locked = channel.lock()) {
-                            if (!sent_head) {
-                                channel_locked->send(HeadMessage {inbound_resp.status_code, std::move(inbound_resp.headers)});
-                            }
-                            channel_locked->send(EndMessage {});
-                        }
-                        database::end_request(*request_id, REQUEST_STATE_COMPLETED);
-                    } catch (const std::exception& e) {
-                        SPDLOG_ERROR("Proxy request failed: {}", e.what());
-                        handle_failure();
-                    } catch (...) {
-                        SPDLOG_ERROR("Proxy request failed with a non-standard exception");
-                        handle_failure();
-                    }
-                },
-                    true);
-
-                return receive_proxy_response(std::move(channel));
-            }),
-        });
+                    return receive_proxy_response(std::move(channel));
+                }),
+            });
+    }
 
     server.route("/v1/messages",
         pw::Route {

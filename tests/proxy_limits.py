@@ -20,7 +20,7 @@ with socket.socket() as available_port:
 
 with tempfile.TemporaryDirectory() as directory:
     shutil.copytree(pathlib.Path(__file__).resolve().parents[1] / "web", pathlib.Path(directory, "web"))
-    pathlib.Path(directory, "keys.json").write_text('{"deepseek":"dummy"}')
+    pathlib.Path(directory, "keys.json").write_text('{"deepseek":"dummy","openai":"dummy"}')
     created = subprocess.run(
         [binary, "user", "add", "alice", "--five-hour-limit", "1", "--weekly-limit", "1"],
         cwd=directory, text=True, capture_output=True, check=True,
@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory() as directory:
         else:
             raise AssertionError("server did not start")
 
-        for route in ("/chat/completions", "/v1/messages"):
+        for route in ("/chat/completions", "/v1/messages", "/responses"):
             for scenario in ("five", "weekly", "both", "both-five-later", "disabled"):
                 now_ms = time.time_ns() // 1_000_000
                 five_start = now_ms - 1000
@@ -59,9 +59,10 @@ with tempfile.TemporaryDirectory() as directory:
                 db.commit()
                 connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
                 headers = {"Content-Type": "application/json"}
-                headers["Authorization" if route == "/chat/completions" else "x-api-key"] = "Bearer " + key if route == "/chat/completions" else key
+                headers["x-api-key" if route == "/v1/messages" else "Authorization"] = key if route == "/v1/messages" else "Bearer " + key
                 before_ms = time.time_ns() // 1_000_000
-                connection.request("POST", route, json.dumps({"model": "deepseek-flash", "messages": []}), headers)
+                body = {"model": "openai/gpt-4.1-mini", "input": "local prompt"} if route == "/responses" else {"model": "deepseek-flash", "messages": []}
+                connection.request("POST", route, json.dumps(body), headers)
                 response = connection.getresponse()
                 body = response.read()
                 after_ms = time.time_ns() // 1_000_000
@@ -80,7 +81,7 @@ with tempfile.TemporaryDirectory() as directory:
                 assert db.execute("SELECT COUNT(*) FROM requests").fetchone() == (1,)
 
         # Provider selection must fail locally when its upstream key is absent.
-        for model in ("opencode-go/glm-5.3-flash", "openai/gpt-4.1-mini"):
+        for model in ("opencode-go/glm-5.3-flash",):
             connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
             connection.request("POST", "/chat/completions", json.dumps({"model": model, "messages": []}),
                                {"Content-Type": "application/json", "Authorization": "Bearer " + key})
@@ -94,4 +95,4 @@ with tempfile.TemporaryDirectory() as directory:
         server.communicate(timeout=5)
         db.close()
 
-print("PASS: both routes reject exhausted budgets with 429 and reset-based Retry-After; disabled budgets remain 403")
+print("PASS: all three routes reject exhausted budgets with 429 and reset-based Retry-After; disabled budgets remain 403")

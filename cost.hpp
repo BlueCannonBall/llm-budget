@@ -15,7 +15,7 @@ namespace cost {
         uint64_t cache_hit_tokens;
         uint64_t cache_miss_tokens;
         uint64_t output_tokens;
-        // Cache writes are included in cache_miss_tokens; Chat Completions reports zero.
+        // Cache writes are included in cache_miss_tokens, not added to total input.
         uint64_t cache_creation_tokens;
     };
 
@@ -117,11 +117,15 @@ namespace cost {
 
         bool have_hits = detail::field_value(usage, "prompt_cache_hit_tokens") != nullptr;
         bool have_misses = detail::field_value(usage, "prompt_cache_miss_tokens") != nullptr;
+        uint64_t created = 0;
         if (auto details = detail::field_value(usage, "prompt_tokens_details"); details && !details->is_null()) {
             if (!details->is_object()) return std::nullopt;
 
             auto cached = detail::token_count(details->object(), "cached_tokens");
-            if (!cached) return std::nullopt;
+            auto writes = detail::token_count(details->object(), "cache_write_tokens");
+            if (!cached || !writes) return std::nullopt;
+
+            created = *writes;
 
             if (detail::field_value(details->object(), "cached_tokens")) {
                 if (have_hits && *hits != *cached) return std::nullopt;
@@ -138,7 +142,33 @@ namespace cost {
             misses = *input - *hits;
         }
 
-        return TokenUsage {*hits, *misses, *output, 0};
+        if (created > *misses) return std::nullopt;
+
+        return TokenUsage {*hits, *misses, *output, created};
+    }
+
+    // Responses input includes cached tokens; output includes reasoning tokens.
+    inline std::optional<TokenUsage> from_responses_usage(const SJSON::JSObject& usage) {
+        auto input = detail::token_count(usage, "input_tokens");
+        auto output = detail::token_count(usage, "output_tokens");
+        if (!input || !output) return std::nullopt;
+
+        uint64_t hits = 0;
+        uint64_t created = 0;
+        if (auto details = detail::field_value(usage, "input_tokens_details"); details && !details->is_null()) {
+            if (!details->is_object()) return std::nullopt;
+
+            auto cached = detail::token_count(details->object(), "cached_tokens");
+            auto writes = detail::token_count(details->object(), "cache_write_tokens");
+            if (!cached || !writes) return std::nullopt;
+
+            created = *writes;
+
+            hits = *cached;
+        }
+        if (hits > *input || created > *input - hits) return std::nullopt;
+
+        return TokenUsage {hits, *input - hits, *output, created};
     }
 
     // Missing fields become zero. Input excludes cache reads and writes; retain

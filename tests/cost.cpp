@@ -118,6 +118,31 @@ int main() {
     check_usage(cost::from_anthropic_usage({{"input_tokens", 0}, {"output_tokens", 0}}), 0, 0, 0);
     check_usage(cost::from_chat_completions_usage({{"prompt_tokens", 0}, {"prompt_cache_hit_tokens", 0}, {"prompt_cache_miss_tokens", 0}, {"completion_tokens", 0}}), 0, 0, 0);
 
+    // Responses includes cache reads in input and reasoning in output.
+    SJSON::JSObject responses_usage {
+        {"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 10}}},
+        {"output_tokens", 16}, {"output_tokens_details", SJSON::JSObject {{"reasoning_tokens", 12}}},
+    };
+    auto responses_tokens = cost::from_responses_usage(responses_usage);
+    check_usage(responses_tokens, 10, 25, 16);
+    check_cost("openai", "gpt-4.1-mini", *responses_tokens, off_peak, 36600);
+    check_usage(cost::from_responses_usage({{"input_tokens", 35}, {"output_tokens", 16}}), 0, 35, 16);
+    check_usage(cost::from_responses_usage({{"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 35}}}}), 35, 0, 0);
+    assert(!cost::from_responses_usage({{"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 36}}}}));
+    assert(!cost::from_responses_usage({{"input_tokens_details", "invalid"}}));
+
+    auto response_writes = cost::from_responses_usage({
+        {"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 10}, {"cache_write_tokens", 5}}},
+        {"output_tokens", 16},
+    });
+    check_usage(response_writes, 10, 25, 16, 5);
+    check_cost("openai", "gpt-6.1-sol", *response_writes, off_peak, 213500);
+    check_usage(cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 10}, {"cache_write_tokens", 5}}},
+        {"completion_tokens", 16}}), 10, 25, 16, 5);
+    assert(!cost::from_responses_usage({{"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 10}, {"cache_write_tokens", 26}}}}));
+    assert(!cost::from_chat_completions_usage({{"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 10}, {"cache_write_tokens", 26}}}}));
+
     // Raw initial usage, output-only deltas, and empty snapshots are accepted.
     check_usage(cost::from_anthropic_usage({{"input_tokens", 25}, {"cache_read_input_tokens", 10}, {"output_tokens", 1}}), 10, 25, 1);
     check_usage(cost::from_anthropic_usage({{"output_tokens", 16}}), 0, 0, 16);
@@ -148,6 +173,20 @@ int main() {
         std::numeric_limits<SJSON::JSNumber>::infinity(),
         std::numeric_limits<SJSON::JSNumber>::quiet_NaN(),
     };
+    for (const auto& value : invalid_counts) {
+        auto invalid = responses_usage;
+        invalid["input_tokens"] = value;
+        assert(!cost::from_responses_usage(invalid));
+        invalid = responses_usage;
+        invalid["output_tokens"] = value;
+        assert(!cost::from_responses_usage(invalid));
+        invalid = responses_usage;
+        invalid["input_tokens_details"] = SJSON::JSObject {{"cached_tokens", value}};
+        assert(!cost::from_responses_usage(invalid));
+        invalid["input_tokens_details"] = SJSON::JSObject {{"cache_write_tokens", value}};
+        assert(!cost::from_responses_usage(invalid));
+        assert(!cost::from_chat_completions_usage({{"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cache_write_tokens", value}}}}));
+    }
     for (const auto& field : {"prompt_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "completion_tokens"}) {
         for (const auto& value : invalid_counts) {
             auto invalid = chat_usage;
@@ -293,6 +332,13 @@ int main() {
 
     check_cost("openai", "gpt-4.1-mini", {10, 25, 16, 0}, peak, 36600);
     check_cost("openai", "gpt-4o-mini", {10, 25, 16, 0}, peak, 14100);
+
+    // At the boundary, use short-context rates; beyond it reprice the full request.
+    check_cost("openai", "gpt-6.1-sol", {272000, 0, 1, 0}, off_peak, 27210000);
+    check_cost("openai", "gpt-6.1-sol", {272000, 1, 1, 1}, off_peak, 54420000);
+    check_cost("openai", "gpt-5.5-pro", {0, 272000, 1, 0}, off_peak, 8160180000);
+    check_cost("openai", "gpt-5.5-pro", {0, 272001, 1, 0}, off_peak, 16320330000);
+    check_cost("openai", "gpt-5.3-codex", {10, 25, 16, 0}, off_peak, 269500);
 
     // The same upstream name can be different products; never silently choose
     // a subscription or provider for an unqualified model.

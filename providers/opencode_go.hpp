@@ -12,6 +12,7 @@ namespace providers {
             .name = "opencode-go",
             .chat_completions_base_url = "https://opencode.ai/zen/go/v1",
             .anthropic_messages_base_url = "https://opencode.ai/zen/go",
+            .responses_base_url = "https://opencode.ai/zen/go/v1",
         };
 
         // Rates, native protocols and thresholds: https://opencode.ai/v2/docs/console/go
@@ -333,7 +334,7 @@ namespace providers {
                 outbound_headers["User-Agent"] = "llm-budget/1.0";
             }
 
-            for (const auto* header : {"x-opencode-session", "X-Claude-Code-Session-Id"}) {
+            for (const auto* header : {"x-opencode-session", "X-Claude-Code-Session-Id", "session-id", "thread-id"}) {
                 if (auto session = inbound_headers.find(header); session != inbound_headers.end()) {
                     outbound_headers[session->first] = session->second;
                 }
