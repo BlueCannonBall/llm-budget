@@ -5,6 +5,7 @@
   --text: #202b3b;
   --muted: #59677a;
   --border: #d6dde7;
+  --progress-track: #dce3ed;
   --accent: #285dc7;
   --accent-hover: #204ca4;
   --focus: #285dc7;
@@ -21,6 +22,7 @@
     --text: #edf1f7;
     --muted: #acb8cb;
     --border: #3a4658;
+    --progress-track: #303c4e;
     --accent: #4577d9;
     --accent-hover: #3767c4;
     --focus: #9cbdff;
@@ -40,9 +42,9 @@ body {
 }
 
 main {
-  width: min(100%, 900px);
+  width: min(100%, 720px);
   margin: 0 auto;
-  padding: 2rem 1.25rem;
+  padding: clamp(2rem, 6vh, 4rem) 1.25rem 2rem;
 }
 
 .page-header {
@@ -238,23 +240,49 @@ th:first-child {
 }
 
 th:nth-child(2) {
-  width: 25%;
+  width: 32%;
 }
 
 tbody th, tbody td {
   border-top: 1px solid var(--border);
 }
 
+.reset-countdown {
+  display: block;
+  font-weight: 600;
+}
+
 time {
-  display: inline-block;
+  display: block;
+  margin-top: .2rem;
+  color: var(--muted);
+  font-size: .8rem;
 }
 
 progress {
+  appearance: none;
   display: block;
   width: 100%;
-  height: .45rem;
+  height: .625rem;
   margin-top: .4rem;
-  accent-color: var(--accent);
+  border: 0;
+  border-radius: 999px;
+  background: var(--progress-track);
+}
+
+progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--progress-track);
+}
+
+progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 @media (max-width: 480px) {

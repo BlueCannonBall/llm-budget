@@ -23,10 +23,38 @@ function localizeTimes() {
     for (const timestamp of result.querySelectorAll("time[datetime]")) {
         const date = new Date(timestamp.dateTime);
         if (!Number.isNaN(date.getTime())) timestamp.textContent = formatter.format(date);
+        const countdown = document.createElement("span");
+        countdown.className = "reset-countdown";
+        timestamp.before(countdown);
     }
 
     const heading = result.querySelector("#reset-timezone");
     if (heading) heading.textContent = `Reset (${formatter.resolvedOptions().timeZone})`;
+    updateResetCountdowns();
+}
+
+function updateResetCountdowns() {
+    const now = Date.now();
+    for (const timestamp of result.querySelectorAll("time[datetime]")) {
+        const countdown = timestamp.previousElementSibling;
+        if (!countdown?.classList.contains("reset-countdown")) continue;
+
+        const remaining = Math.ceil((Date.parse(timestamp.dateTime) - now) / 60000);
+        if (!Number.isFinite(remaining)) continue;
+        if (remaining <= 0) {
+            countdown.textContent = "Reset due";
+            continue;
+        }
+
+        const days = Math.floor(remaining / 1440);
+        const hours = Math.floor(remaining % 1440 / 60);
+        const minutes = remaining % 60;
+        const parts = [];
+        if (days) parts.push(`${days}d`);
+        if (hours) parts.push(`${hours}h`);
+        if (minutes) parts.push(`${minutes}m`);
+        countdown.textContent = `Resets in ${parts.join(" ")}`;
+    }
 }
 
 function updateControls() {
@@ -146,6 +174,7 @@ keyInput.addEventListener("input", updateControls);
 
 document.getElementById("remember-controls").hidden = false;
 localizeTimes();
+setInterval(updateResetCountdowns, 60000);
 if (result.querySelector("table")) settings.open = false;
 try {
     const savedKey = localStorage.getItem(storageKey);

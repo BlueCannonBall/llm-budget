@@ -228,6 +228,9 @@ timezone and locale. The reset column names the timezone; with JavaScript
 disabled, both the heading and timestamps explicitly use UTC. Deploy behind
 HTTPS to protect the key in transit. The key is not put in the URL or the response,
 and the page is marked `no-store`.
+Scheduled resets also show a countdown with JavaScript enabled, updated once per
+minute. **Reset due** indicates that the deadline has passed; **Refresh usage**
+reloads the recorded usage.
 
 The page uses a compact layout with light/dark colors following the browser's
 preference. After a successful lookup, the API key form collapses into **Key
