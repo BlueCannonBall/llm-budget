@@ -6,11 +6,11 @@
 #include <vector>
 #include <utility>
 
-static providers::Configuration make_configuration(std::string_view plan = "go", std::string_view price = "10.00") {
+static providers::Configuration make_configuration(std::string_view plan = "go") {
     return providers::configure({
         {"deepseek", "test-deepseek"},
         {"openai", "test-openai"},
-        {"opencode-go", SJSON::JSObject {{"api_key", "test-go"}, {"plan", plan}, {"monthly_price_usd", price}}},
+        {"opencode-go", SJSON::JSObject {{"api_key", "test-go"}, {"plan", plan}}},
     });
 }
 
@@ -256,15 +256,10 @@ int main() {
     check_cost("opencode-go", "glm-5.2", {100, 1000, 100, 0}, off_peak, 311000);
 
     // Plus allowances are model-specific, not a uniform multiple of Go.
-    auto plus_configuration = make_configuration("go-plus", "40.00");
+    auto plus_configuration = make_configuration("go-plus");
     check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 622000, plus_configuration);
     check_cost("opencode-go", "glm-5.2", {100, 1000, 100, 0}, off_peak, 414667, plus_configuration);
 
-    plus_configuration = make_configuration("go-plus", "20.00");
-    check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 311000, plus_configuration);
-
-    plus_configuration = make_configuration("go-plus", "0.00");
-    check_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, 0, plus_configuration);
     check_cost("deepseek", "deepseek-flash", {0, 35, 15, 0}, off_peak, 14250, plus_configuration);
 
     assert(!calculate_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, providers::Configuration {}));

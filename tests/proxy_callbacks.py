@@ -117,7 +117,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
         shutil.copytree(root / "web", directory / "web")
         (directory / "keys.json").write_text(json.dumps({
             "deepseek": "test-deepseek",
-            "opencode-go": {"api_key": "test-go", "plan": "go", "monthly_price_usd": "10.00"},
+            "opencode-go": {"api_key": "test-go", "plan": "go"},
             "openai": "test-openai",
         }))
         keys = []

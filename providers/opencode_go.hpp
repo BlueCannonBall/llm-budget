@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../configured_provider.hpp"
-#include "../money.hpp"
 #include <stdexcept>
 #include <stdint.h>
 
@@ -218,11 +217,6 @@ namespace providers {
             GO_PLAN_GO_PLUS,
         };
 
-        struct GoSubscription {
-            GoPlan plan;
-            uint64_t monthly_price_nanodollars;
-        };
-
         struct GoAllowance {
             std::string_view model;
             uint16_t go_monthly_usd;
@@ -264,7 +258,7 @@ namespace providers {
             {.model = "gpt-5.6-luna", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
         };
 
-        GoSubscription go_subscription {};
+        GoPlan go_plan = GO_PLAN_GO;
 
     public:
         OpenCodeGoProvider():
@@ -273,30 +267,24 @@ namespace providers {
         explicit OpenCodeGoProvider(SJSON::JSValue&& config):
             ConfiguredProvider(provider_definition) {
             if (!config.is_object()) {
-                throw std::invalid_argument("opencode-go must contain api_key, plan and monthly_price_usd");
+                throw std::invalid_argument("opencode-go must contain api_key and plan");
             }
 
             auto& object = config.object();
             auto api_key_it = object.find("api_key");
             auto plan_it = object.find("plan");
-            auto price_it = object.find("monthly_price_usd");
-            if (api_key_it == object.end() || !api_key_it->second.is_string() || api_key_it->second.string().empty() || plan_it == object.end() || !plan_it->second.is_string() || price_it == object.end() || !price_it->second.is_string()) {
-                throw std::invalid_argument("opencode-go requires a nonempty api_key and string plan and monthly_price_usd");
+            if (api_key_it == object.end() || !api_key_it->second.is_string() || api_key_it->second.string().empty() || plan_it == object.end() || !plan_it->second.is_string()) {
+                throw std::invalid_argument("opencode-go requires a nonempty api_key and string plan");
             }
 
-            GoPlan selected_plan;
             if (plan_it->second.string() == "go") {
-                selected_plan = GO_PLAN_GO;
+                go_plan = GO_PLAN_GO;
             } else if (plan_it->second.string() == "go-plus") {
-                selected_plan = GO_PLAN_GO_PLUS;
+                go_plan = GO_PLAN_GO_PLUS;
             } else {
                 throw std::invalid_argument("opencode-go plan must be go or go-plus");
             }
 
-            go_subscription = GoSubscription {
-                .plan = selected_plan,
-                .monthly_price_nanodollars = parse_nanodollars(price_it->second.string()),
-            };
             api_key = std::move(api_key_it->second.string());
         }
 
@@ -311,14 +299,17 @@ namespace providers {
                 if (allowance.model != model.name) continue;
 
                 uint64_t monthly_usd;
-                if (go_subscription.plan == GO_PLAN_GO) {
+                uint64_t plan_usd;
+                if (go_plan == GO_PLAN_GO) {
                     monthly_usd = allowance.go_monthly_usd;
+                    plan_usd = 10;
                 } else {
                     monthly_usd = allowance.go_plus_monthly_usd;
+                    plan_usd = 40;
                 }
                 if (!monthly_usd) return cost::Multiplier {0, 1};
 
-                return cost::Multiplier {go_subscription.monthly_price_nanodollars, monthly_usd * 1'000'000'000ULL};
+                return cost::Multiplier {plan_usd, monthly_usd};
             }
 
             return std::nullopt;

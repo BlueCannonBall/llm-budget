@@ -56,19 +56,17 @@ it from the directory that holds them:
       "deepseek": "sk-...",
       "opencode-go": {
           "api_key": "your-go-key",
-          "plan": "go",
-          "monthly_price_usd": "10.00"
+          "plan": "go"
       },
       "openai": "sk-..."
   }
   ```
 
-  For `opencode-go`, `plan` must be `"go"` or `"go-plus"`. Set
-  `monthly_price_usd` to the actual monthly purchase price, including discounts:
-  a nonnegative decimal **string** with at most nine decimal places. There is no
-  default price. The old bare Go key string is no longer accepted; replace it
-  with this object. Direct-provider keys remain strings. Invalid Go configuration
-  stops startup.
+  For `opencode-go`, `plan` must be `"go"` or `"go-plus"`. Subscription prices are
+  fixed at **$10/month for Go** and **$40/month for Go Plus**, alongside the
+  published token rates and allowances. The object contains only `api_key` and
+  `plan`; the old bare Go key string is not accepted. Direct-provider keys remain
+  strings. Invalid Go configuration stops startup.
 
 - `llm-budget.db` — the SQLite database. It is created on first use and uses WAL
   mode, so SQLite may also create `llm-budget.db-wal` and `llm-budget.db-shm`.
@@ -380,13 +378,14 @@ batch, priority, tool, or other extra charges.
 ### One shared Go subscription
 
 All proxy users use the operator's one Go key. The `opencode-go` object in
-`keys.json` selects the plan and supplies its actual monthly purchase price.
-The separate `go_allowances_` table in `providers/opencode_go.hpp` supplies each model's
+`keys.json` selects the plan. Its published monthly price is fixed in code:
+$10 for Go or $40 for Go Plus, with no configurable price override.
+The separate `go_allowances` table in `providers/opencode_go.hpp` supplies each model's
 published monthly allowance for the selected plan. Go Plus allowances are not
 a uniform multiple of Go allowances.
 
 ```text
-request cost = token cost × subscription purchase price
+request cost = token cost × published monthly plan price
                ÷ model's monthly included usage allowance
 ```
 
@@ -403,8 +402,8 @@ leaves some subscription expense unallocated. Do not add these allocated costs
 to the subscription purchase when computing actual cash expenses.
 Disable Go's **Use balance** setting for this policy: automatic paid Zen fallback
 is not distinguished in usage reports and would invalidate subscription-only accounting.
-Changing the configured plan or purchase price requires a restart and affects
-new requests only; previously stored request costs are not recalculated.
+Changing the configured plan requires a restart and affects new requests only;
+previously stored request costs are not recalculated.
 
 ### Usage accounting
 
