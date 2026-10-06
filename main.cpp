@@ -56,54 +56,19 @@ std::string_view protocol_name(providers::Protocol protocol) {
     return "unknown";
 }
 
-SJSON::JSValue usage_field_snapshot(const SJSON::JSValue& value) {
-    if (value.is_number() && std::isfinite(value.number())) return value.number();
-    return SJSON::JSObject {{"type", value.type_str()}};
-}
-
-std::string usage_snapshot(const SJSON::JSObject* usage, std::string_view root_type) {
-    if (!usage) return SJSON::JSValue(SJSON::JSObject {{"type", root_type}}).to_string();
-
-    // Copy only known numeric counters; other values become type-only markers.
-    SJSON::JSObject snapshot;
-    for (auto field : {"prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens",
-             "prompt_cache_miss_tokens", "input_tokens", "output_tokens", "cache_read_input_tokens",
-             "cache_creation_input_tokens", "cache_write_tokens", "cached_tokens"}) {
-        if (auto value = cost::detail::field_value(*usage, field)) {
-            snapshot.emplace(field, usage_field_snapshot(*value));
-        }
-    }
-    for (auto field : {"prompt_tokens_details", "input_tokens_details"}) {
-        auto details = cost::detail::field_value(*usage, field);
-        if (!details) continue;
-        if (!details->is_object()) {
-            snapshot.emplace(field, usage_field_snapshot(*details));
-            continue;
-        }
-
-        SJSON::JSObject counts;
-        for (auto count : {"cached_tokens", "cache_write_tokens", "cache_creation_input_tokens", "cache_creation_tokens"}) {
-            if (auto value = cost::detail::field_value(details->object(), count)) {
-                counts.emplace(count, usage_field_snapshot(*value));
-            }
-        }
-        snapshot.emplace(field, std::move(counts));
-    }
-    return SJSON::JSValue(std::move(snapshot)).to_string();
-}
 
 void log_usage_failure(std::string_view failure, const cost::UsageError& error,
-    const SJSON::JSObject* usage, std::string_view root_type, const User& user,
+    const SJSON::JSValue& usage, const User& user,
     request_id_t request_id, const providers::Provider& provider, const providers::Model& model,
     providers::Protocol protocol, std::string_view event) {
     SPDLOG_WARN("Cost estimate unavailable: {} (user={} id={}, request={}, service={}, model={}, protocol={}, event={}) field={} reason={} usage={}",
         failure, user.name, user.id, request_id, provider.name, model.name,
-        protocol_name(protocol), event, error.field, error.reason, usage_snapshot(usage, root_type));
+        protocol_name(protocol), event, error.field, error.reason, usage.to_string());
 }
 
 void record_request_cost(
     const cost::UsageResult& token_usage,
-    const SJSON::JSObject& raw_usage,
+    const SJSON::JSValue& raw_usage,
     const User& user,
     request_id_t request_id,
     const providers::Provider& provider,
@@ -113,7 +78,7 @@ void record_request_cost(
     providers::Protocol protocol,
     std::string_view event) {
     if (!token_usage) {
-        log_usage_failure("Failed to parse usage", token_usage.error(), &raw_usage, "Object",
+        log_usage_failure("Failed to parse usage", token_usage.error(), raw_usage,
             user, request_id, provider, model, protocol, event);
         return;
     }
@@ -121,7 +86,7 @@ void record_request_cost(
     auto amount = cost::calculate(model, *token_usage, now, multiplier);
     if (!amount) {
         log_usage_failure("Failed to calculate cost", {"cost", "pricing_schedule_or_arithmetic_unavailable"},
-            &raw_usage, "Object", user, request_id, provider, model, protocol, event);
+            raw_usage, user, request_id, provider, model, protocol, event);
         return;
     }
 
@@ -511,7 +476,7 @@ int main(int argc, char** argv) {
 
                                 if (auto usage_it = response->find("usage"); usage_it != response->end() && usage_it->second.is_object()) {
                                     auto usage = (protocol == providers::PROTOCOL_RESPONSES) ? cost::from_responses_usage(usage_it->second.object()) : cost::from_chat_completions_usage(usage_it->second.object());
-                                    record_request_cost(usage, usage_it->second.object(), user, request_id, *definition, *selected_model, now, multiplier,
+                                    record_request_cost(usage, usage_it->second, user, request_id, *definition, *selected_model, now, multiplier,
                                         protocol, protocol == providers::PROTOCOL_RESPONSES ? "sse.response_terminal" : "sse.message");
                                 }
 
@@ -521,12 +486,12 @@ int main(int argc, char** argv) {
                             SJSON::Parse json_parser;
                             json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, protocol, request_id = *request_id](const SJSON::JSValue& usage) {
                                 if (!usage.is_object()) {
-                                    log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, nullptr, usage.type_str(),
+                                    log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, usage,
                                         user, request_id, *definition, *selected_model, protocol, "json.usage");
                                     return;
                                 }
                                 auto tokens = protocol == providers::PROTOCOL_RESPONSES ? cost::from_responses_usage(usage.object()) : cost::from_chat_completions_usage(usage.object());
-                                record_request_cost(tokens, usage.object(), user, request_id, *definition, *selected_model, now, multiplier, protocol, "json.usage");
+                                record_request_cost(tokens, usage, user, request_id, *definition, *selected_model, now, multiplier, protocol, "json.usage");
                             });
 
                             pw::Response inbound_resp;
@@ -666,7 +631,7 @@ int main(int argc, char** argv) {
                             return;
                         }
 
-                        pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, request_id = *request_id, current_usage = SJSON::JSObject {}](pw::SSEEvent event) mutable -> bool {
+                        pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, request_id = *request_id, current_usage = SJSON::JSValue(SJSON::JSObject {})](pw::SSEEvent event) mutable -> bool {
                             if (event.type != "message_start" && event.type != "message_delta") return true;
 
                             SJSON::JSObject message;
@@ -680,7 +645,7 @@ int main(int argc, char** argv) {
 
                             const SJSON::JSObject* event_body = &message;
                             if (event.type == "message_start") {
-                                current_usage.clear();
+                                current_usage.object().clear();
                                 auto message_it = message.find("message");
                                 if (message_it == message.end() || !message_it->second.is_object()) return true;
                                 event_body = &message_it->second.object();
@@ -691,9 +656,9 @@ int main(int argc, char** argv) {
                             // Counts are cumulative: replace reported fields and
                             // retain omitted fields, including initial input/cache counts.
                             for (const auto& [field, value] : usage_it->second.object()) {
-                                current_usage[field] = value;
+                                current_usage.object()[field] = value;
                             }
-                            record_request_cost(cost::from_anthropic_usage(current_usage), current_usage, user, request_id, *definition, *selected_model, now, multiplier,
+                            record_request_cost(cost::from_anthropic_usage(current_usage.object()), current_usage, user, request_id, *definition, *selected_model, now, multiplier,
                                 providers::PROTOCOL_ANTHROPIC_MESSAGES, event.type);
 
                             return true;
@@ -702,11 +667,11 @@ int main(int argc, char** argv) {
                         SJSON::Parse json_parser;
                         json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
                             if (!usage.is_object()) {
-                                log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, nullptr, usage.type_str(),
+                                log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, usage,
                                     user, request_id, *definition, *selected_model, providers::PROTOCOL_ANTHROPIC_MESSAGES, "json.usage");
                                 return;
                             }
-                            record_request_cost(cost::from_anthropic_usage(usage.object()), usage.object(), user, request_id, *definition, *selected_model, now, multiplier,
+                            record_request_cost(cost::from_anthropic_usage(usage.object()), usage, user, request_id, *definition, *selected_model, now, multiplier,
                                 providers::PROTOCOL_ANTHROPIC_MESSAGES, "json.usage");
                         });
 

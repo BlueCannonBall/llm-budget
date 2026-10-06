@@ -434,10 +434,10 @@ previously stored request costs are not recalculated.
 - Unpriceable usage logs a warning without replacing an earlier estimate. Usage
   parsers return `cost::UsageResult`, carrying the offending field and rejection
   reason on failure. Warnings identify the user, request ID, provider, model,
-  protocol, and JSON/SSE event source, followed by `field`, `reason`, and a compact
-  JSON `usage` snapshot. Snapshots contain only whitelisted numeric token counters
-  and nested cache details; other values are represented by their types. Headers,
-  credentials, prompts, response text, and arbitrary provider fields are not logged.
+  protocol, and JSON/SSE event source, followed by `field`, `reason`, and the complete
+  JSON `usage` value. Unknown fields, nested details, nulls, and malformed values
+  are retained without filtering or type-only substitutions. Request headers,
+  prompts, and response content outside `usage` are not included.
   Missing usage fields default to zero. Optional Chat Completions/Responses
   `cache_write_tokens: null` likewise means no reported cache-write count; cached
   reads are still accounted for. Other null counters and malformed or inconsistent

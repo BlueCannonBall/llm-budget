@@ -40,22 +40,15 @@ namespace cost {
     }
 
     namespace detail {
-        inline const SJSON::JSValue* field_value(const SJSON::JSObject& usage, std::string_view field) {
-            // JSObject has no transparent lookup; avoid temporary string allocation.
-            for (const auto& [name, value] : usage) {
-                if (name == field) return &value;
-            }
-            return nullptr;
-        }
 
         inline std::expected<uint64_t, UsageError> token_count(const SJSON::JSObject& usage, std::string_view field, std::string_view path = {}) {
             if (path.empty()) path = field;
-            auto value = field_value(usage, field);
+            auto value = usage.find(std::string(field));
             // Optional cache-write metadata can explicitly report no count.
-            if (!value || (value->is_null() && field == "cache_write_tokens")) return 0;
-            if (!value->is_number()) return std::unexpected(UsageError {path, "expected_number"});
+            if (value == usage.end() || (value->second.is_null() && field == "cache_write_tokens")) return 0;
+            if (!value->second.is_number()) return std::unexpected(UsageError {path, "expected_number"});
 
-            double count = value->number();
+            double count = value->second.number();
             if (!std::isfinite(count)) return std::unexpected(UsageError {path, "nonfinite_count"});
             if (count < 0) return std::unexpected(UsageError {path, "negative_count"});
             if (count > 9007199254740991.0) return std::unexpected(UsageError {path, "count_exceeds_exact_integer_range"});
@@ -129,21 +122,21 @@ namespace cost {
         if (!misses) return std::unexpected(misses.error());
         if (!output) return std::unexpected(output.error());
 
-        bool have_hits = detail::field_value(usage, "prompt_cache_hit_tokens") != nullptr;
-        bool have_misses = detail::field_value(usage, "prompt_cache_miss_tokens") != nullptr;
+        bool have_hits = usage.contains("prompt_cache_hit_tokens");
+        bool have_misses = usage.contains("prompt_cache_miss_tokens");
         std::string_view hits_field = "prompt_cache_hit_tokens";
         uint64_t created = 0;
-        if (auto details = detail::field_value(usage, "prompt_tokens_details"); details && !details->is_null()) {
-            if (!details->is_object()) return std::unexpected(UsageError {"prompt_tokens_details", "expected_object"});
+        if (auto details = usage.find("prompt_tokens_details"); details != usage.end() && !details->second.is_null()) {
+            if (!details->second.is_object()) return std::unexpected(UsageError {"prompt_tokens_details", "expected_object"});
 
-            auto cached = detail::token_count(details->object(), "cached_tokens", "prompt_tokens_details.cached_tokens");
-            auto writes = detail::token_count(details->object(), "cache_write_tokens", "prompt_tokens_details.cache_write_tokens");
+            auto cached = detail::token_count(details->second.object(), "cached_tokens", "prompt_tokens_details.cached_tokens");
+            auto writes = detail::token_count(details->second.object(), "cache_write_tokens", "prompt_tokens_details.cache_write_tokens");
             if (!cached) return std::unexpected(cached.error());
             if (!writes) return std::unexpected(writes.error());
 
             created = *writes;
 
-            if (detail::field_value(details->object(), "cached_tokens")) {
+            if (details->second.object().contains("cached_tokens")) {
                 if (have_hits && *hits != *cached) return std::unexpected(UsageError {"prompt_cache_hit_tokens", "conflicts_with_prompt_tokens_details.cached_tokens"});
                 hits = cached;
                 have_hits = true;
@@ -151,7 +144,7 @@ namespace cost {
             }
         }
 
-        if (detail::field_value(usage, "prompt_tokens")) {
+        if (usage.contains("prompt_tokens")) {
             if (*hits > *input) return std::unexpected(UsageError {hits_field, "cache_reads_exceed_prompt_tokens"});
             if (*misses > *input) return std::unexpected(UsageError {"prompt_cache_miss_tokens", "cache_misses_exceed_prompt_tokens"});
 
@@ -174,11 +167,11 @@ namespace cost {
 
         uint64_t hits = 0;
         uint64_t created = 0;
-        if (auto details = detail::field_value(usage, "input_tokens_details"); details && !details->is_null()) {
-            if (!details->is_object()) return std::unexpected(UsageError {"input_tokens_details", "expected_object"});
+        if (auto details = usage.find("input_tokens_details"); details != usage.end() && !details->second.is_null()) {
+            if (!details->second.is_object()) return std::unexpected(UsageError {"input_tokens_details", "expected_object"});
 
-            auto cached = detail::token_count(details->object(), "cached_tokens", "input_tokens_details.cached_tokens");
-            auto writes = detail::token_count(details->object(), "cache_write_tokens", "input_tokens_details.cache_write_tokens");
+            auto cached = detail::token_count(details->second.object(), "cached_tokens", "input_tokens_details.cached_tokens");
+            auto writes = detail::token_count(details->second.object(), "cache_write_tokens", "input_tokens_details.cache_write_tokens");
             if (!cached) return std::unexpected(cached.error());
             if (!writes) return std::unexpected(writes.error());
 
