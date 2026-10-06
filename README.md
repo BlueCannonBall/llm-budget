@@ -438,8 +438,11 @@ previously stored request costs are not recalculated.
   JSON `usage` snapshot. Snapshots contain only whitelisted numeric token counters
   and nested cache details; other values are represented by their types. Headers,
   credentials, prompts, response text, and arbitrary provider fields are not logged.
-  Missing usage fields default to zero; incomplete reports can underestimate
-  costs. Unknown costs do not contribute to budget totals.
+  Missing usage fields default to zero. Optional Chat Completions/Responses
+  `cache_write_tokens: null` likewise means no reported cache-write count; cached
+  reads are still accounted for. Other null counters and malformed or inconsistent
+  counts remain rejected. Incomplete reports can underestimate costs, and unknown
+  costs do not contribute to budget totals.
 
 ## Known limitations
 

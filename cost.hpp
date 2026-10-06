@@ -51,7 +51,8 @@ namespace cost {
         inline std::expected<uint64_t, UsageError> token_count(const SJSON::JSObject& usage, std::string_view field, std::string_view path = {}) {
             if (path.empty()) path = field;
             auto value = field_value(usage, field);
-            if (!value) return 0;
+            // Optional cache-write metadata can explicitly report no count.
+            if (!value || (value->is_null() && field == "cache_write_tokens")) return 0;
             if (!value->is_number()) return std::unexpected(UsageError {path, "expected_number"});
 
             double count = value->number();

@@ -184,8 +184,14 @@ int main() {
         invalid["input_tokens_details"] = SJSON::JSObject {{"cached_tokens", value}};
         assert(!cost::from_responses_usage(invalid));
         invalid["input_tokens_details"] = SJSON::JSObject {{"cache_write_tokens", value}};
-        assert(!cost::from_responses_usage(invalid));
-        assert(!cost::from_chat_completions_usage({{"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cache_write_tokens", value}}}}));
+        if (value.is_null()) {
+            check_usage(cost::from_responses_usage(invalid), 0, 35, 16);
+            check_usage(cost::from_chat_completions_usage({{"prompt_tokens", 35},
+                {"prompt_tokens_details", SJSON::JSObject {{"cache_write_tokens", value}}}}), 0, 35, 0);
+        } else {
+            assert(!cost::from_responses_usage(invalid));
+            assert(!cost::from_chat_completions_usage({{"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cache_write_tokens", value}}}}));
+        }
     }
     for (const auto& field : {"prompt_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "completion_tokens"}) {
         for (const auto& value : invalid_counts) {
@@ -206,10 +212,12 @@ int main() {
     assert(conflicting_cache.error().field == "prompt_cache_hit_tokens");
     assert(conflicting_cache.error().reason == "conflicts_with_prompt_tokens_details.cached_tokens");
     auto null_writes = cost::from_responses_usage({
-        {"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cache_write_tokens", SJSON::JSNull {}}}}});
-    assert(!null_writes);
-    assert(null_writes.error().field == "input_tokens_details.cache_write_tokens");
-    assert(null_writes.error().reason == "expected_number");
+        {"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 10}, {"cache_write_tokens", SJSON::JSNull {}}}}});
+    check_usage(null_writes, 10, 25, 0);
+    auto go_flash_usage = cost::from_chat_completions_usage({
+        {"prompt_tokens", 211852}, {"completion_tokens", 139},
+        {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 2688}, {"cache_write_tokens", SJSON::JSNull {}}}}});
+    check_usage(go_flash_usage, 2688, 209164, 139);
     auto oversized_cache = cost::from_chat_completions_usage({
         {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 36}}}});
     assert(!oversized_cache);
