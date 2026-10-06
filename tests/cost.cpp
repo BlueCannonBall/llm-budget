@@ -31,7 +31,7 @@ static std::optional<std::uint64_t> calculate_cost(std::string_view service, std
     return cost::calculate(*selected_model, usage, at, *multiplier);
 }
 
-static void check_usage(const std::optional<cost::TokenUsage>& usage,
+static void check_usage(const cost::UsageResult& usage,
     std::uint64_t hits, std::uint64_t misses, std::uint64_t output, std::uint64_t creation = 0) {
     assert(usage);
     assert(usage->cache_hit_tokens == hits);
@@ -191,18 +191,36 @@ int main() {
         for (const auto& value : invalid_counts) {
             auto invalid = chat_usage;
             invalid[field] = value;
-            assert(!cost::from_chat_completions_usage(invalid));
+            auto rejected = cost::from_chat_completions_usage(invalid);
+            assert(!rejected && rejected.error().field == field);
         }
         auto missing = chat_usage;
         missing.erase(field);
         check_usage(cost::from_chat_completions_usage(missing), 10, 25,
             std::string_view(field) == "completion_tokens" ? 0 : 16);
     }
+    auto conflicting_cache = cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_cache_hit_tokens", 0},
+        {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 10}}}});
+    assert(!conflicting_cache);
+    assert(conflicting_cache.error().field == "prompt_cache_hit_tokens");
+    assert(conflicting_cache.error().reason == "conflicts_with_prompt_tokens_details.cached_tokens");
+    auto null_writes = cost::from_responses_usage({
+        {"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cache_write_tokens", SJSON::JSNull {}}}}});
+    assert(!null_writes);
+    assert(null_writes.error().field == "input_tokens_details.cache_write_tokens");
+    assert(null_writes.error().reason == "expected_number");
+    auto oversized_cache = cost::from_chat_completions_usage({
+        {"prompt_tokens", 35}, {"prompt_tokens_details", SJSON::JSObject {{"cached_tokens", 36}}}});
+    assert(!oversized_cache);
+    assert(oversized_cache.error().field == "prompt_tokens_details.cached_tokens");
+    assert(oversized_cache.error().reason == "cache_reads_exceed_prompt_tokens");
     for (const auto& field : {"input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"}) {
         for (const auto& value : invalid_counts) {
             auto invalid = anthropic_usage;
             invalid[field] = value;
-            assert(!cost::from_anthropic_usage(invalid));
+            auto rejected = cost::from_anthropic_usage(invalid);
+            assert(!rejected && rejected.error().field == field);
         }
         auto missing = anthropic_usage;
         missing.erase(field);

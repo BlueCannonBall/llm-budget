@@ -431,7 +431,13 @@ previously stored request costs are not recalculated.
   `database::update_request()` function, which stores it in `cost_nanodollars`.
   The database schema and stored costs are unchanged; no migration or additional
   accounting columns are required.
-- Unpriceable usage logs a warning without replacing an earlier estimate.
+- Unpriceable usage logs a warning without replacing an earlier estimate. Usage
+  parsers return `cost::UsageResult`, carrying the offending field and rejection
+  reason on failure. Warnings identify the user, request ID, provider, model,
+  protocol, and JSON/SSE event source, followed by `field`, `reason`, and a compact
+  JSON `usage` snapshot. Snapshots contain only whitelisted numeric token counters
+  and nested cache details; other values are represented by their types. Headers,
+  credentials, prompts, response text, and arbitrary provider fields are not logged.
   Missing usage fields default to zero; incomplete reports can underestimate
   costs. Unknown costs do not contribute to budget totals.
 

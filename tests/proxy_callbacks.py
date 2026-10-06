@@ -66,8 +66,11 @@ class Upstream(BaseHTTPRequestHandler):
             usage = {"prompt_tokens": 300, "prompt_tokens_details": {"cached_tokens": 100},
                      "completion_tokens": 1000000}
             if body.get("stream"):
-                payload = ('data: ' + json.dumps({"usage": usage}) + '\n\ndata: [DONE]\n\n').encode()
+                events = body.get("metadata", {}).get("usage_events", [usage])
+                payload = (''.join('data: ' + json.dumps({"usage": event}) + '\n\n' for event in events)
+                           + 'data: [DONE]\n\n').encode()
             else:
+                usage = body.get("metadata", {}).get("usage_events", [usage])[-1]
                 payload = json.dumps({"usage": usage}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream" if body.get("stream") else "application/json")
@@ -250,10 +253,39 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert last_row() == 83338834
             assert request("opencode-go/glm-5.3-flash", user=1)[0] == 429
             assert len(seen) == calls + 1
+
+            # A rejected later snapshot must preserve the prior charge, while
+            # diagnostics never disclose arbitrary provider values.
+            private_value = "private-provider-value-must-not-be-logged"
+            valid_usage = {"prompt_tokens": 300, "completion_tokens": 1000,
+                           "prompt_tokens_details": {"cached_tokens": 100}}
+            invalid_usage = dict(valid_usage, prompt_cache_hit_tokens=None,
+                                 private_provider_payload={"value": private_value})
+            invalid_usage["prompt_tokens_details"] = {"cached_tokens": 100,
+                                                      "cache_write_tokens": private_value}
+            assert request("openai/gpt-4.1-mini", stream=True,
+                           metadata={"usage_events": [valid_usage, invalid_usage]})[0] == 200
+            assert last_row() == 1690000
+            assert request("openai/gpt-4.1-mini",
+                           metadata={"usage_events": [invalid_usage]})[0] == 200
+            assert last_row() is None
         finally:
             server.terminate()
-            server.communicate(timeout=5)
+            output, _ = server.communicate(timeout=5)
             db.close()
+
+        assert private_value not in output
+        diagnostics = [line for line in output.splitlines() if "field=prompt_cache_hit_tokens" in line]
+        assert len(diagnostics) == 2
+        for line in diagnostics:
+            assert "reason=expected_number" in line
+            snapshot = json.loads(line.split(" usage=", 1)[1])
+            assert snapshot["prompt_cache_hit_tokens"] == {"type": "Null"}
+            assert snapshot["prompt_tokens_details"]["cache_write_tokens"] == {"type": "String"}
+            assert "private_provider_payload" not in snapshot
+            assert "user=alice id=1" in line and "request=" in line
+            assert "service=openai" in line and "model=gpt-4.1-mini" in line
+            assert "protocol=chat_completions" in line
 
         # Replace one configured provider with a catalog whose pricing can be
         # unavailable. The production routes, transport and database remain real.

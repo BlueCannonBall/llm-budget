@@ -4,6 +4,7 @@
 #include "providers.hpp"
 #include <chrono>
 #include <cmath>
+#include <expected>
 #include <limits>
 #include <optional>
 #include <stdint.h>
@@ -18,6 +19,13 @@ namespace cost {
         // Cache writes are included in cache_miss_tokens, not added to total input.
         uint64_t cache_creation_tokens;
     };
+
+    struct UsageError {
+        std::string_view field;
+        std::string_view reason;
+    };
+
+    using UsageResult = std::expected<TokenUsage, UsageError>;
 
     struct Multiplier {
         uint64_t numerator;
@@ -40,15 +48,17 @@ namespace cost {
             return nullptr;
         }
 
-        inline std::optional<uint64_t> token_count(const SJSON::JSObject& usage, std::string_view field) {
+        inline std::expected<uint64_t, UsageError> token_count(const SJSON::JSObject& usage, std::string_view field, std::string_view path = {}) {
+            if (path.empty()) path = field;
             auto value = field_value(usage, field);
             if (!value) return 0;
-            if (!value->is_number()) return std::nullopt;
+            if (!value->is_number()) return std::unexpected(UsageError {path, "expected_number"});
 
             double count = value->number();
-            if (!std::isfinite(count) || count < 0 || count > 9007199254740991.0 || std::trunc(count) != count) {
-                return std::nullopt;
-            }
+            if (!std::isfinite(count)) return std::unexpected(UsageError {path, "nonfinite_count"});
+            if (count < 0) return std::unexpected(UsageError {path, "negative_count"});
+            if (count > 9007199254740991.0) return std::unexpected(UsageError {path, "count_exceeds_exact_integer_range"});
+            if (std::trunc(count) != count) return std::unexpected(UsageError {path, "fractional_count"});
 
             return (uint64_t) count;
         }
@@ -108,78 +118,92 @@ namespace cost {
 
     // prompt_tokens includes both cache buckets. Nested cached_tokens and explicit
     // cache counts must agree when both are present.
-    inline std::optional<TokenUsage> from_chat_completions_usage(const SJSON::JSObject& usage) {
+    inline UsageResult from_chat_completions_usage(const SJSON::JSObject& usage) {
         auto input = detail::token_count(usage, "prompt_tokens");
         auto hits = detail::token_count(usage, "prompt_cache_hit_tokens");
         auto misses = detail::token_count(usage, "prompt_cache_miss_tokens");
         auto output = detail::token_count(usage, "completion_tokens");
-        if (!input || !hits || !misses || !output) return std::nullopt;
+        if (!input) return std::unexpected(input.error());
+        if (!hits) return std::unexpected(hits.error());
+        if (!misses) return std::unexpected(misses.error());
+        if (!output) return std::unexpected(output.error());
 
         bool have_hits = detail::field_value(usage, "prompt_cache_hit_tokens") != nullptr;
         bool have_misses = detail::field_value(usage, "prompt_cache_miss_tokens") != nullptr;
+        std::string_view hits_field = "prompt_cache_hit_tokens";
         uint64_t created = 0;
         if (auto details = detail::field_value(usage, "prompt_tokens_details"); details && !details->is_null()) {
-            if (!details->is_object()) return std::nullopt;
+            if (!details->is_object()) return std::unexpected(UsageError {"prompt_tokens_details", "expected_object"});
 
-            auto cached = detail::token_count(details->object(), "cached_tokens");
-            auto writes = detail::token_count(details->object(), "cache_write_tokens");
-            if (!cached || !writes) return std::nullopt;
+            auto cached = detail::token_count(details->object(), "cached_tokens", "prompt_tokens_details.cached_tokens");
+            auto writes = detail::token_count(details->object(), "cache_write_tokens", "prompt_tokens_details.cache_write_tokens");
+            if (!cached) return std::unexpected(cached.error());
+            if (!writes) return std::unexpected(writes.error());
 
             created = *writes;
 
             if (detail::field_value(details->object(), "cached_tokens")) {
-                if (have_hits && *hits != *cached) return std::nullopt;
+                if (have_hits && *hits != *cached) return std::unexpected(UsageError {"prompt_cache_hit_tokens", "conflicts_with_prompt_tokens_details.cached_tokens"});
                 hits = cached;
                 have_hits = true;
+                hits_field = "prompt_tokens_details.cached_tokens";
             }
         }
 
         if (detail::field_value(usage, "prompt_tokens")) {
-            if (*hits > *input || *misses > *input) return std::nullopt;
+            if (*hits > *input) return std::unexpected(UsageError {hits_field, "cache_reads_exceed_prompt_tokens"});
+            if (*misses > *input) return std::unexpected(UsageError {"prompt_cache_miss_tokens", "cache_misses_exceed_prompt_tokens"});
 
             if (!have_hits && have_misses) hits = *input - *misses;
-            if (have_misses && *misses != *input - *hits) return std::nullopt;
+            if (have_misses && *misses != *input - *hits) return std::unexpected(UsageError {"prompt_cache_miss_tokens", "cache_buckets_do_not_sum_to_prompt_tokens"});
             misses = *input - *hits;
         }
 
-        if (created > *misses) return std::nullopt;
+        if (created > *misses) return std::unexpected(UsageError {"prompt_tokens_details.cache_write_tokens", "cache_writes_exceed_cache_misses"});
 
         return TokenUsage {*hits, *misses, *output, created};
     }
 
     // Responses input includes cached tokens; output includes reasoning tokens.
-    inline std::optional<TokenUsage> from_responses_usage(const SJSON::JSObject& usage) {
+    inline UsageResult from_responses_usage(const SJSON::JSObject& usage) {
         auto input = detail::token_count(usage, "input_tokens");
         auto output = detail::token_count(usage, "output_tokens");
-        if (!input || !output) return std::nullopt;
+        if (!input) return std::unexpected(input.error());
+        if (!output) return std::unexpected(output.error());
 
         uint64_t hits = 0;
         uint64_t created = 0;
         if (auto details = detail::field_value(usage, "input_tokens_details"); details && !details->is_null()) {
-            if (!details->is_object()) return std::nullopt;
+            if (!details->is_object()) return std::unexpected(UsageError {"input_tokens_details", "expected_object"});
 
-            auto cached = detail::token_count(details->object(), "cached_tokens");
-            auto writes = detail::token_count(details->object(), "cache_write_tokens");
-            if (!cached || !writes) return std::nullopt;
+            auto cached = detail::token_count(details->object(), "cached_tokens", "input_tokens_details.cached_tokens");
+            auto writes = detail::token_count(details->object(), "cache_write_tokens", "input_tokens_details.cache_write_tokens");
+            if (!cached) return std::unexpected(cached.error());
+            if (!writes) return std::unexpected(writes.error());
 
             created = *writes;
 
             hits = *cached;
         }
-        if (hits > *input || created > *input - hits) return std::nullopt;
+        if (hits > *input) return std::unexpected(UsageError {"input_tokens_details.cached_tokens", "cache_reads_exceed_input_tokens"});
+        if (created > *input - hits) return std::unexpected(UsageError {"input_tokens_details.cache_write_tokens", "cache_writes_exceed_cache_misses"});
 
         return TokenUsage {hits, *input - hits, *output, created};
     }
 
     // Missing fields become zero. Input excludes cache reads and writes; retain
     // writes in cache_miss_tokens and separate them when applying rates.
-    inline std::optional<TokenUsage> from_anthropic_usage(const SJSON::JSObject& usage) {
+    inline UsageResult from_anthropic_usage(const SJSON::JSObject& usage) {
         auto input = detail::token_count(usage, "input_tokens");
         auto hits = detail::token_count(usage, "cache_read_input_tokens");
         auto created = detail::token_count(usage, "cache_creation_input_tokens");
         auto output = detail::token_count(usage, "output_tokens");
-        if (!input || !hits || !created || !output || *created > std::numeric_limits<uint64_t>::max() - *input) {
-            return std::nullopt;
+        if (!input) return std::unexpected(input.error());
+        if (!hits) return std::unexpected(hits.error());
+        if (!created) return std::unexpected(created.error());
+        if (!output) return std::unexpected(output.error());
+        if (*created > std::numeric_limits<uint64_t>::max() - *input) {
+            return std::unexpected(UsageError {"cache_creation_input_tokens", "input_and_cache_writes_overflow"});
         }
 
         return TokenUsage {*hits, *input + *created, *output, *created};
