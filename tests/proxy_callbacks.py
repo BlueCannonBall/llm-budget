@@ -232,13 +232,18 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][1]["Authorization"] == "Bearer test-deepseek"
             assert seen[-1][2]["user"] == "alice"
 
+            # Go permits non-native routes; usage still uses the selected model's rates.
+            assert request("opencode-go/minimax-m2.7")[0] == 200
+            assert last_row() == 200011000
+            assert request("opencode-go/gpt-5.6-luna")[0] == 200
+            assert last_row() == 800028000
+            assert request("opencode-go/glm-5.3-flash", "/responses")[0] == 200
+            assert last_row() == 88834
+
             count = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
             calls = len(seen)
-            assert request("opencode-go/minimax-m2.7")[0] == 400
-            assert request("opencode-go/gpt-5.6-luna")[0] == 400
             assert request("not-a-model")[0] == 400
             assert request("openai/gpt-5.5-pro")[0] == 400
-            assert request("opencode-go/glm-5.3-flash", "/responses")[0] == 400
             assert len(seen) == calls
             assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == count
 

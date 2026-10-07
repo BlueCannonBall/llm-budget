@@ -91,9 +91,9 @@ All three routes forward JSON to the provider selected by the request's model:
 
 | Local route | User authentication | Available providers |
 | --- | --- | --- |
-| `POST /chat/completions` | `Authorization: Bearer <user API key>` | DeepSeek, Go Chat models, OpenAI Chat-capable models |
-| `POST /v1/messages` | `x-api-key: <user API key>` or Bearer authorization | DeepSeek, Go Messages models |
-| `POST /responses` | `Authorization: Bearer <user API key>` | DeepSeek, Go Responses models, OpenAI models |
+| `POST /chat/completions` | `Authorization: Bearer <user API key>` | DeepSeek, all cataloged Go models, OpenAI Chat-capable models |
+| `POST /v1/messages` | `x-api-key: <user API key>` or Bearer authorization | DeepSeek, all cataloged Go models |
+| `POST /responses` | `Authorization: Bearer <user API key>` | DeepSeek, all cataloged Go models, OpenAI models |
 
 Provider-qualified names pin routing without ambiguity:
 
@@ -117,9 +117,10 @@ October 6, 2026:
   Sources: [models/pricing](https://api-docs.deepseek.com/quick_start/pricing/),
   [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
 - **OpenCode Go:** all 30 [documented models](https://opencode.ai/v2/docs/console/go),
-  with their native protocols, token rates, long-context tiers, and both Go/Go Plus
-  allowances. GPT Luna, Grok, and Muse Spark use Responses; Qwen and MiniMax use
-  Messages; the remaining models use Chat Completions.
+  with token rates, long-context tiers, and both Go/Go Plus allowances. Every
+  cataloged Go model is permitted through all three proxy routes. Go determines
+  protocol compatibility; upstream rejections are forwarded unchanged, without
+  protocol translation. Permitted routing does not guarantee upstream support.
 - **OpenAI:** 35 text/coding models, with endpoint support checked against each
   [model page](https://developers.openai.com/api/docs/models) and standard rates
   from [pricing](https://developers.openai.com/api/docs/pricing):
@@ -161,9 +162,10 @@ deletion, cancellation, compaction, or WebSocket transport.
 
 - Missing, malformed, or unrecognized user credentials get `401`. On the
   Messages route, `Authorization` takes precedence if both headers are supplied.
-- The body must be JSON with a `model` string. Unknown models and models
-  incompatible with the incoming API format get `400`. Methods other than
-  `POST` get `405`.
+- The body must be JSON with a `model` string. Unknown models and locally restricted
+  protocol/model combinations get `400`. Go models have no local protocol
+  restrictions; unsupported combinations return Go's upstream error.
+  Methods other than `POST` get `405`.
 - Only configure keys for providers you use. A missing, empty, or non-string
   key for a selected provider gets `503` before request admission.
 - A model whose provider cannot resolve its cost multiplier gets `503` before
@@ -321,8 +323,8 @@ allocated Go subscription costs. These totals are not actual provider invoices.
 
 ## Cost estimation
 
-`providers.hpp` defines the shared `Model` and `Rates` records, native protocol
-flags, and pricing schedules. Model records use local upstream names and named
+`providers.hpp` defines the shared `Model` and `Rates` records, permitted proxy
+protocol flags, and pricing schedules. Model records use local upstream names and named
 fields for rates, optional input-token tiers, and schedules.
 They contain neither registry indexes nor repeated provider prefixes.
 
@@ -336,13 +338,14 @@ behavior specific to a provider live in its concrete implementation. Only
 `provider_config.hpp` constructs the providers and resolves names to a
 provider/model pair. Lookup uses provider names, not positions in a registry or
 an aligned configuration array. Known models remain resolvable when credentials
-are absent, so unsupported protocols still get `400` and unavailable providers
+are absent. Locally restricted protocols still get `400`; unavailable providers
 get `503`.
 
 Adding a model with an existing pricing scheme requires a named catalog row in
 its provider, not a new pricing function. Go models also need allowances for
-both Go and Go Plus in `providers/opencode_go.hpp`. Use `PROTOCOL_*` flags for
-native protocols and `SCHEDULE_*` constants for schedules.
+both Go and Go Plus in `providers/opencode_go.hpp`. Go catalog rows use
+`permitted_protocols` to delegate compatibility decisions to Go. Other providers
+use `PROTOCOL_*` flags for permitted routes. Use `SCHEDULE_*` constants for schedules.
 
 `cost.hpp` normalizes API usage and calculates token costs, applying the
 provider's resolved exact multiplier before rounding. It has no subscription

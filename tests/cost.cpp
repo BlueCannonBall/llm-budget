@@ -372,14 +372,6 @@ int main() {
     assert(direct->model->name == "deepseek-v4-pro" && direct_qualified->model->name == "deepseek-v4-pro");
     assert(go->model->name == "deepseek-v4-pro");
     assert(direct->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && direct->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
-    assert(go->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !go->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
-
-    auto messages = providers::resolve(configuration, "opencode-go/minimax-m2.7");
-    assert(messages && messages->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES) && !messages->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS));
-
-    auto responses = providers::resolve(configuration, "opencode-go/gpt-6-luna");
-    assert(responses && responses->model->supports(providers::PROTOCOL_RESPONSES));
-    assert(!responses->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !responses->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
 
     auto openai = providers::resolve(configuration, "openai/gpt-4.1-mini");
     assert(openai && openai->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !openai->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
