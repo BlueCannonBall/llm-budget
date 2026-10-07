@@ -500,6 +500,8 @@ int main(int argc, char** argv) {
                                                            ? std::string(definition->responses_base_url) + "/responses"
                                                            : std::string(definition->chat_completions_base_url) + "/chat/completions";
                             if (pn::Status result = pw::fetch("POST", upstream_url, inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                                SPDLOG_ERROR("Upstream request failed: {} (user={} id={}, request={}, service={}, model={}, protocol={})",
+                                    result.error().message(), user.name, user.id, *request_id, definition->name, selected_model->name, protocol_name(protocol));
                                 if (auto channel_locked = channel.lock()) {
                                     if (!sent_head) send_basic_resp(*channel_locked, 502);
                                     channel_locked->send(EndMessage {});
@@ -678,6 +680,8 @@ int main(int argc, char** argv) {
                         pw::Response inbound_resp;
                         configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
                         if (pn::Status result = pw::fetch("POST", std::string(definition->anthropic_messages_base_url) + "/v1/messages", inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                            SPDLOG_ERROR("Upstream request failed: {} (user={} id={}, request={}, service={}, model={}, protocol={})",
+                                result.error().message(), user.name, user.id, *request_id, definition->name, selected_model->name, protocol_name(providers::PROTOCOL_ANTHROPIC_MESSAGES));
                             if (auto channel_locked = channel.lock()) {
                                 if (!sent_head) send_basic_resp(*channel_locked, 502);
                                 channel_locked->send(EndMessage {});

@@ -29,6 +29,21 @@ class Upstream(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         seen.append((self.headers["X-Test-Original-URL"], dict(self.headers), body))
+        failure = body.get("metadata", {}).get("transport_failure")
+        if failure:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            if failure == "headers":
+                self.send_header("Content-Length", "invalid")
+            else:
+                self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            if failure == "body":
+                chunk = b'data: {}\n\n'
+                self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b'\r\ninvalid\r\n')
+                self.wfile.flush()
+            self.close_connection = True
+            return
         if self.path.endswith("/responses"):
             usage = {"input_tokens": 300, "input_tokens_details": {"cached_tokens": 100},
                      "output_tokens": 1000, "output_tokens_details": {"reasoning_tokens": 900}}
@@ -287,10 +302,44 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert request("opencode-go/deepseek-v4.1-flash",
                            metadata={"usage_events": [reported_usage]})[0] == 200
             assert last_row() in expected_costs
+
+            # Transport errors must be logged even after a streaming head was sent.
+            failed_requests = []
+            for route, model, protocol, service in (
+                    ("/chat/completions", "openai/gpt-4.1-mini", "chat_completions", "openai"),
+                    ("/responses", "openai/gpt-4.1-mini", "responses", "openai"),
+                    ("/v1/messages", "opencode-go/minimax-m2.7", "anthropic_messages", "opencode-go")):
+                for failure in ("headers", "body"):
+                    status, payload = request(model, route, stream=True,
+                                              metadata={"transport_failure": failure})
+                    assert status == (502 if failure == "headers" else 200), (status, payload)
+                    if failure == "body":
+                        assert payload == b'data: {}\n\n', payload
+                    row = None
+                    for _ in range(100):
+                        row = db.execute("SELECT id, state FROM requests ORDER BY id DESC LIMIT 1").fetchone()
+                        if row and row[1] == "interrupted":
+                            break
+                        time.sleep(0.01)
+                    assert row and row[1] == "interrupted", row
+                    failed_requests.append((row[0], service, model.split("/", 1)[1], protocol, failure))
         finally:
             server.terminate()
             output, _ = server.communicate(timeout=5)
             db.close()
+
+        failures = [line for line in output.splitlines() if "Upstream request failed:" in line]
+        assert len(failures) == len(failed_requests), failures
+        for request_id, service, model, protocol, failure in failed_requests:
+            matching = [line for line in failures if f"request={request_id}," in line]
+            assert len(matching) == 1, matching
+            line = matching[0]
+            operation = "parse HTTP content length" if failure == "headers" else "parse HTTP chunk size"
+            assert f"{operation}: Invalid HTTP message" in line, line
+            assert "user=alice id=1" in line and f"service={service}," in line, line
+            assert f"model={model}," in line and f"protocol={protocol})" in line, line
+        assert not any(key in line for key in keys + ["test-openai", "test-go", "test-deepseek"]
+                       for line in failures), "Failure logs must not contain credentials"
 
         diagnostics = [line for line in output.splitlines() if "field=prompt_cache_hit_tokens" in line]
         assert len(diagnostics) == 2
