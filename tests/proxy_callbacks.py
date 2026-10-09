@@ -67,11 +67,12 @@ class Upstream(BaseHTTPRequestHandler):
         elif self.path.endswith("/messages"):
             usage = {"input_tokens": 200, "cache_read_input_tokens": 100,
                      "cache_creation_input_tokens": 5, "output_tokens": 1000}
+            usage = body.get("metadata", {}).get("message_usage", usage)
             if body.get("stream"):
                 initial = dict(usage, output_tokens=1)
                 payload = (
                     'event: message_start\ndata: ' + json.dumps({"message": {"usage": initial}}) + '\n\n'
-                    'event: message_delta\ndata: ' + json.dumps({"usage": {"output_tokens": 1000}}) + '\n\n'
+                    'event: message_delta\ndata: ' + json.dumps({"usage": {"output_tokens": usage["output_tokens"]}}) + '\n\n'
                     'event: message_stop\ndata: {}\n\n'
                 ).encode()
             else:
@@ -209,6 +210,28 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][0] == "https://opencode.ai/zen/go/v1/messages"
             assert seen[-1][1]["x-api-key"] == "test-go"
             assert "Authorization" not in seen[-1][1]
+
+            for stream in (False, True):
+                assert request("opencode-go/claude-haiku-5-5", "/v1/messages", stream=stream)[0] == 200
+                assert last_row() == 347750
+                assert seen[-1][0] == "https://opencode.ai/zen/go/v1/messages"
+                assert seen[-1][1]["x-api-key"] == "test-go"
+                assert seen[-1][1]["anthropic-version"] == "2023-06-01"
+                assert seen[-1][1]["x-opencode-session"] == "conversation-1"
+                assert seen[-1][2]["model"] == "claude-haiku-5-5"
+
+            for writes, expected in ((1, 670077), (2, 3350800)):
+                usage = {"input_tokens": 0, "cache_read_input_tokens": 99999,
+                         "cache_creation_input_tokens": writes, "output_tokens": 10}
+                assert request("opencode-go/claude-haiku-5-5", "/v1/messages", stream=True,
+                               metadata={"message_usage": usage})[0] == 200
+                assert last_row() == expected
+
+            assert request("opencode-go/space-bunny")[0] == 200
+            assert last_row() == 200011000
+            calls_before_retired_model = len(seen)
+            assert request("opencode-go/space-bunny-free")[0] == 400
+            assert len(seen) == calls_before_retired_model
 
             assert request("openai/gpt-4.1-mini")[0] == 200
             openai = last_row()

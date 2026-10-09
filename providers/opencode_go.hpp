@@ -15,7 +15,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked October 5, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked October 8, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES;
@@ -178,9 +178,9 @@ namespace providers {
             },
 
             {
-                .name = "space-bunny-free",
+                .name = "space-bunny",
                 .protocols = permitted_protocols,
-                .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
+                .rates = {.input = 150'000, .cached_read = 30'000, .output = 600'000, .cached_write = 150'000},
             },
 
             {
@@ -197,6 +197,14 @@ namespace providers {
                 .rates = {.input = 2'000'000, .cached_read = 500'000, .output = 6'000'000, .cached_write = 2'000'000},
                 .input_token_threshold = 200'000,
                 .above_threshold_rates = {.input = 4'000'000, .cached_read = 1'000'000, .output = 12'000'000, .cached_write = 4'000'000},
+            },
+
+            {
+                .name = "claude-haiku-5-5",
+                .protocols = permitted_protocols,
+                .rates = {.input = 100'000, .cached_read = 10'000, .output = 500'000, .cached_write = 125'000},
+                .input_token_threshold = 100'000,
+                .above_threshold_rates = {.input = 500'000, .cached_read = 50'000, .output = 2'500'000, .cached_write = 625'000},
             },
 
             {
@@ -255,9 +263,10 @@ namespace providers {
             {.model = "deepseek-v4-flash-vision-exp", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "hy4-preview", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "hy3", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
-            {.model = "space-bunny-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
+            {.model = "space-bunny", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "grok-4.7", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "grok-4.6", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
+            {.model = "claude-haiku-5-5", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "gpt-6-luna", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "gpt-5.6-luna", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
         };

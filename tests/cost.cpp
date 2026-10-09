@@ -335,9 +335,19 @@ int main() {
     check_cost("opencode-go", "gpt-6-luna", {272000, 0, 1, 0}, off_peak, 1813667);
     check_cost("opencode-go", "gpt-6-luna", {272000, 1, 1, 1}, off_peak, 3627334);
 
-    for (auto model : {"space-bunny-free", "longcat-2.5-preview-free"}) {
-        check_cost("opencode-go", model, {maximum, 0, maximum, 0}, peak, 0);
-    }
+    // Haiku's 100K boundary includes reads and writes, but never output tokens.
+    check_cost("opencode-go", "claude-haiku-5-5", {99999, 1, 10, 1}, off_peak, 670077);
+    check_cost("opencode-go", "claude-haiku-5-5", {99999, 2, 10, 2}, off_peak, 3350800);
+    check_cost("opencode-go", "claude-haiku-5-5", {99999, 1, 1000000, 1}, off_peak, 334000077);
+    check_cost("opencode-go", "claude-haiku-5-5", {100, 205, 1000, 5}, off_peak, 347750);
+    check_cost("opencode-go", "claude-haiku-5-5", {99999, 1, 10, 1}, off_peak, 670077, plus_configuration);
+    check_cost("opencode-go", "claude-haiku-5-5", {99999, 2, 10, 2}, off_peak, 3350800, plus_configuration);
+
+    // Space Bunny is now paid, with $30/$120 allowances; do not route the retired free ID.
+    check_cost("opencode-go", "space-bunny", {100, 205, 1000, 5}, off_peak, 211250);
+    check_cost("opencode-go", "space-bunny", {100, 205, 1000, 5}, off_peak, 211250, plus_configuration);
+    assert(!providers::resolve(configuration, "opencode-go/space-bunny-free"));
+    check_cost("opencode-go", "longcat-2.5-preview-free", {maximum, 0, maximum, 0}, peak, 0);
 
     check_cost("opencode-go", "glm-5.3", {0, 0, 0, 0}, peak, 0);
     check_cost("deepseek", "deepseek-flash", {maximum / 3, 0, 0, 0}, off_peak, maximum);
@@ -347,7 +357,7 @@ int main() {
     assert(!calculate_cost("opencode-go", "glm-5.3", {0, maximum, maximum, 0}, off_peak));
     assert(!calculate_cost("opencode-go", "mimo-v2.6-pro", {maximum, 1, 0, 0}, off_peak));
     assert(!calculate_cost("deepseek", "deepseek-flash", {0, 1, 0, 2}, off_peak));
-    assert(!calculate_cost("opencode-go", "space-bunny-free", {0, 1, 0, 2}, off_peak));
+    assert(!calculate_cost("opencode-go", "longcat-2.5-preview-free", {0, 1, 0, 2}, off_peak));
     assert(!calculate_cost("unknown", "glm-5.3", {0, 0, 0, 0}, off_peak));
     assert(!calculate_cost("opencode-go", "unknown", {0, 0, 0, 0}, off_peak));
 

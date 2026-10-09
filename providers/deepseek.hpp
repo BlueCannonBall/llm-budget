@@ -12,7 +12,7 @@ namespace providers {
             .responses_base_url = "https://api.deepseek.com",
         };
 
-        // Direct Chinese holiday rules are independent of Go.
+        // Rates checked October 8, 2026. Direct Chinese holiday rules are independent of Go.
         // https://api-docs.deepseek.com/quick_start/pricing/
         // https://api-docs.deepseek.com/news/news260910/
         // https://api-docs.deepseek.com/news/news260813/

@@ -12,7 +12,7 @@ namespace providers {
             .responses_base_url = "https://api.openai.com/v1",
         };
 
-        // Standard text-token rates, checked October 6, 2026. No tool or service-tier fees.
+        // Standard text-token rates, checked October 8, 2026. No tool or service-tier fees.
         // https://developers.openai.com/api/docs/pricing
         // Protocol support: https://developers.openai.com/api/docs/models/<model-id>
         // Models without discounted cache pricing use the ordinary input rate.
