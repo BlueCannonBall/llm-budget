@@ -15,7 +15,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked October 9, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked October 12, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES;
@@ -264,7 +264,7 @@ namespace providers {
             {.model = "qwen3.8-max", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "qwen3.8-flash", .go_monthly_usd = 30, .go_plus_monthly_usd = 90},
             {.model = "qwen3.7-plus", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
-            {.model = "deepseek-v4.1-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
+            {.model = "deepseek-v4.1-flash", .go_monthly_usd = 80, .go_plus_monthly_usd = 160},
             {.model = "deepseek-v4-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "deepseek-v4-flash", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "deepseek-v4-flash-vision-exp", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},

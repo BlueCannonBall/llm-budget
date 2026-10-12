@@ -318,7 +318,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                               "total_tokens": 211991}
             provisional_usage = {"prompt_tokens": 211852, "completion_tokens": 139}
             nominal = 209164 * 150000 + 2688 * 3000 + 139 * 600000
-            expected_costs = ((nominal + 5999) // 6000, (nominal * 2 + 5999) // 6000)
+            expected_costs = ((nominal + 7999) // 8000, (nominal * 2 + 7999) // 8000)
             assert request("opencode-go/deepseek-v4.1-flash", stream=True,
                            metadata={"usage_events": [provisional_usage, reported_usage]})[0] == 200
             assert last_row() in expected_costs

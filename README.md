@@ -108,8 +108,8 @@ openai/gpt-4.1-mini
 The proxy replaces the outbound `model` with the upstream model ID. Unqualified
 `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
 models require qualification. There is no automatic fallback to another provider.
-Each concrete provider owns its routing/pricing catalog in `providers/`. Checked
-October 9, 2026:
+Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
+baseline checked October 9, 2026; Go allowances updated October 12, 2026:
 
 - **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
   `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
@@ -470,6 +470,21 @@ previously stored request costs are not recalculated.
 - Tests cover local HTTP upstream fixtures and accounting, not live provider
   compatibility or exact billing reconciliation.
 
+## Daily catalog verification
+
+`catalog-update-daily.sh` runs the maintenance agent using `CATALOG_UPDATE.md`.
+Before and after the agent, `python3 catalog-check.py` fetches public DeepSeek
+and OpenCode Go documentation and compares numeric catalogs deterministically:
+direct DeepSeek rates, Go model/tier rows, token rates, and both plan allowances.
+Exit 0 means these fields match, 1 means differences, and 2 means verification
+failed. The wrapper propagates failures to cron and logs details in
+`~/.local/state/llm-budget/catalog-update.log`. It does not retry or send alerts.
+OpenAI, protocol support, README, and schedule implementation remain agent checks;
+a successful numeric check is not proof that those are correct.
+
+For offline verification, pass `--go-html <saved-page>` and
+`--deepseek-html <saved-page>` to `catalog-check.py`.
+
 ## Tests
 
 Run the Python tests from the repository root after building the server:
@@ -480,6 +495,7 @@ python3 tests/usage_page.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_limits.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_callbacks.py          # GNU linker, g++; uses built obj/*.o
 python3 tests/usage_graph.py
+python3 tests/catalog_check.py           # offline catalog/scheduler regressions
 ```
 
 These tests use temporary directories and dummy keys. None contact external providers.

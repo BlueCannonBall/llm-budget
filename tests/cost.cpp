@@ -290,7 +290,11 @@ int main() {
 
     assert(!calculate_cost("opencode-go", "glm-5.3", {100, 1000, 100, 0}, off_peak, providers::Configuration {}));
 
-    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, off_peak, 2375);
+    // V4.1 Flash now includes $80 on Go and $160 on Go Plus.
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, off_peak, 1782);
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, peak, 3563);
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, off_peak, 3563, plus_configuration);
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, peak, 7125, plus_configuration);
     check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, off_peak, 4750);
     check_cost("opencode-go", "deepseek-v4-flash-vision-exp", {0, 35, 15, 0}, off_peak, 9500);
 
