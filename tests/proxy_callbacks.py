@@ -278,9 +278,13 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][0] == "https://api.openai.com/v1/chat/completions"
             assert seen[-1][1]["Authorization"] == "Bearer test-openai"
 
-            assert "service_tier" not in seen[-1][2]
+            assert seen[-1][2]["service_tier"] == "default"
             for route in ("/chat/completions", "/responses"):
                 blocked_fields = [
+                    {"service_tier": tier}
+                    for tier in ("auto", "fast", "priority", "ultrafast", "flex", None, 1)
+                ]
+                blocked_fields += [
                     {"tools": [{"type": tool_type}]}
                     for tool_type in ("image_generation", "web_search", "web_search_preview",
                                       "file_search", "code_interpreter", "shell", "mcp", "tool_search")
@@ -315,12 +319,6 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 assert seen[-1][2]["service_tier"] == "default"
                 assert seen[-1][2]["tools"] == client_tools
                 assert seen[-1][2]["input"] == fields["input"]
-
-            for tier in ("auto", "fast", "priority", "ultrafast", "flex", None, 1):
-                assert request("openai/gpt-6.1-sol", "/responses",
-                               body_fields={"service_tier": tier})[0] == 200
-                assert last_row() == 10435000
-                assert seen[-1][2]["service_tier"] == tier
 
             # Restrictions are direct-OpenAI-only; do not invent Go billing policy.
             fields = {"service_tier": "fast", "tools": [{"type": "web_search"}]}

@@ -194,6 +194,10 @@ deletion, cancellation, compaction, or WebSocket transport.
 - Messages forwards caller `anthropic-version` and `anthropic-beta` headers
   unchanged. When the version header is absent, it defaults to `2023-06-01`.
   The upstream decides whether supplied versions and beta flags are supported.
+- Direct OpenAI requests use standard processing: the proxy explicitly sets
+  `service_tier` to `"default"` to avoid inheriting project-level Fast defaults.
+  Caller-supplied tiers other than `"default"` (including `"auto"`, Fast/Priority,
+  Ultrafast, and Flex) get `400` before admission or upstream dispatch.
 - Direct OpenAI permits only client-executed `function` and `custom` tools.
   Hosted tools, including image generation, web/file search, and hosted execution,
   get `400` because their additional charges are not accounted for. This also
@@ -473,11 +477,9 @@ previously stored request costs are not recalculated.
   terminal event can be marked completed if the HTTP fetch succeeds.
 - Background Responses through Go or DeepSeek can return before usage is available;
   later polling is not proxied or accounted for. Direct OpenAI blocks background
-  requests and hosted tools rather than estimating their unaccounted charges.
-  Service tiers are forwarded unchanged without tier-specific accounting; omitted
-  tiers can inherit provider project defaults. All providers still use their
-  cataloged token rates without service-tier pricing, and Go/DeepSeek estimates
-  do not include additional tool fees.
+  requests, hosted tools, and nonstandard service tiers rather than estimating
+  their unaccounted charges. Other providers still use their cataloged token rates
+  without additional tool fees or service-tier pricing.
 - Proxy-generated errors are plain text, not provider-native JSON error objects.
 - Missing usage or an unavailable pricing schedule can leave a dispatched request
   without a recorded cost. The multiplier admission check does not eliminate these

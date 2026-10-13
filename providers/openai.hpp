@@ -277,6 +277,13 @@ namespace providers {
         }
 
         std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
+            if (auto tier = body.find("service_tier"); tier != body.end()) {
+                if (!tier->second.is_string() || tier->second.string() != "default") {
+                    return "Only standard service_tier=\"default\" is supported; other service-tier prices are not accounted for";
+                }
+            }
+            body["service_tier"] = "default"; // Explicit standard processing avoids inheriting a project's Fast default
+
             if (protocol == PROTOCOL_RESPONSES) {
                 if (auto background = body.find("background"); background != body.end()) {
                     if (!background->second.is_boolean()) return "background must be a boolean";
