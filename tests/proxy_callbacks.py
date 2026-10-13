@@ -156,10 +156,12 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             else:
                 raise AssertionError("server did not start")
 
-            def request(model, route="/chat/completions", stream=False, user=0, metadata=None):
+            def request(model, route="/chat/completions", stream=False, user=0, metadata=None, extra_headers=None):
                 connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
                 headers = {"Content-Type": "application/json", "Authorization": "Bearer " + keys[user],
                            "x-opencode-session": "conversation-1", "session-id": "codex-conversation-1", "thread-id": "codex-thread-1"}
+                if extra_headers is not None:
+                    headers.update(extra_headers)
                 body = {"model": model, "stream": stream}
                 body["input" if route == "/responses" else "messages"] = "local prompt" if route == "/responses" else []
                 if metadata is not None:
@@ -217,8 +219,20 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 assert seen[-1][0] == "https://opencode.ai/zen/go/v1/messages"
                 assert seen[-1][1]["x-api-key"] == "test-go"
                 assert seen[-1][1]["anthropic-version"] == "2023-06-01"
+                assert "anthropic-beta" not in seen[-1][1]
                 assert seen[-1][1]["x-opencode-session"] == "conversation-1"
                 assert seen[-1][2]["model"] == "claude-haiku-5-5"
+
+            for headers in (
+                {"AnThRoPiC-VeRsIoN": "2099-01-01", "AnThRoPiC-BeTa": "test-beta-1,test-beta-2"},
+                {"anthropic-beta": "test-beta-1"},
+                {"anthropic-version": "", "anthropic-beta": ""},
+            ):
+                assert request("opencode-go/claude-haiku-5-5", "/v1/messages", extra_headers=headers)[0] == 200
+                assert last_row() == 347750
+                supplied = {name.lower(): value for name, value in headers.items()}
+                assert seen[-1][1]["anthropic-version"] == supplied.get("anthropic-version", "2023-06-01")
+                assert seen[-1][1]["anthropic-beta"] == supplied["anthropic-beta"]
 
             for writes, expected in ((1, 670077), (2, 3350800)):
                 usage = {"input_tokens": 0, "cache_read_input_tokens": 99999,

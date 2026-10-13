@@ -190,8 +190,9 @@ deletion, cancellation, compaction, or WebSocket transport.
   values. Other Messages metadata is preserved; missing or null metadata is
   created, and non-object metadata gets `400`. Names are forwarded unchanged;
   the CLI does not validate upstream user-ID requirements.
-- Messages sends `anthropic-version: 2023-06-01`. Caller version/beta headers are
-  not forwarded.
+- Messages forwards caller `anthropic-version` and `anthropic-beta` headers
+  unchanged. When the version header is absent, it defaults to `2023-06-01`.
+  The upstream decides whether supplied versions and beta flags are supported.
 - The upstream response is streamed back as received, with `Content-Type` and
   `Retry-After` passed through. Responses are capped at 32,000,000 bytes.
 - All upstream fetches use a 120-second socket read timeout and a 30-second
