@@ -91,7 +91,9 @@ class Upstream(BaseHTTPRequestHandler):
                 usage = body.get("metadata", {}).get("usage_events", [usage])[-1]
                 payload = json.dumps({"usage": usage}).encode()
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream" if body.get("stream") else "application/json")
+        content_type = body.get("metadata", {}).get("test_content_type", "text/event-stream" if body.get("stream") else "application/json")
+        if content_type is not None:
+            self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         # Fragment lifecycle events and JSON across transport reads.
@@ -364,6 +366,12 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert last_row() in expected_costs
 
             # Transport errors must be logged even after a streaming head was sent.
+            for content_type in ("text/plain", None):
+                status, payload = request("openai/gpt-4.1-mini",
+                                          metadata={"test_content_type": content_type})
+                assert status == 200 and json.loads(payload)["usage"]
+                assert last_row() is None
+
             failed_requests = []
             for route, model, protocol, service in (
                     ("/chat/completions", "openai/gpt-4.1-mini", "chat_completions", "openai"),
@@ -389,6 +397,11 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             db.close()
 
         failures = [line for line in output.splitlines() if "Upstream request failed:" in line]
+        content_type_warnings = [line for line in output.splitlines() if "Upstream usage parsing skipped:" in line]
+        assert len(content_type_warnings) == 2, content_type_warnings
+        assert all("[warning]" in line and "status=200" in line for line in content_type_warnings)
+        assert "content_type=text/plain" in content_type_warnings[0]
+        assert "content_type=<missing or empty>" in content_type_warnings[1]
         assert len(failures) == len(failed_requests), failures
         for request_id, service, model, protocol, failure in failed_requests:
             matching = [line for line in failures if f"request={request_id}," in line]

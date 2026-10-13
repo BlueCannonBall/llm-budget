@@ -257,9 +257,13 @@ void configure_response_receiver(
             }
 
             if (!sent_head) {
-                auto content_type_it = inbound_resp.headers.find("Content-Type");
-                if (content_type_it != inbound_resp.headers.end()) {
+                if (auto content_type_it = inbound_resp.headers.find("Content-Type"); content_type_it != inbound_resp.headers.end()) {
                     content_type = pw::string::to_lower_copy(content_type_it->second);
+                }
+                if (!content_type.contains("application/json") && !content_type.contains("text/event-stream")) {
+                    SPDLOG_WARN("Upstream usage parsing skipped: unrecognized Content-Type (status={} content_type={})",
+                        inbound_resp.status_code,
+                        content_type.empty() ? "<missing or empty>" : content_type);
                 }
 
                 channel_locked->send(HeadMessage {
