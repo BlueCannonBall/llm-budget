@@ -564,15 +564,7 @@ int main(int argc, char** argv) {
                     return make_basic_resp(401);
                 }
 
-                pw::Headers outbound_req_headers = {
-                    {"Content-Type", "application/json"},
-                    {"anthropic-version", "2023-06-01"},
-                };
-                for (const auto* header : {"anthropic-version", "anthropic-beta"}) {
-                    if (auto supplied = inbound_req.headers.find(header); supplied != inbound_req.headers.end()) {
-                        outbound_req_headers[header] = supplied->second;
-                    }
-                }
+                pw::Headers outbound_req_headers = {{"Content-Type", "application/json"}};
 
                 SJSON::JSObject req_body;
                 try {

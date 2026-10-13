@@ -336,7 +336,7 @@ namespace providers {
         }
 
         std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            ConfiguredProvider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
+            if (auto error = ConfiguredProvider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
 
             auto user_agent = inbound_headers.find("User-Agent");
             if (user_agent != inbound_headers.end() && !user_agent->second.empty()) {

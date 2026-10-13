@@ -201,9 +201,10 @@ deletion, cancellation, compaction, or WebSocket transport.
   it closes the stream. The request is recorded as interrupted.
 - While the response streams, token usage is read from the SSE events (or a plain
   JSON body) and priced. The estimate is logged and stored on the request row.
-- The proxy does not add `stream_options.include_usage` for streaming Chat
-  Completions. Request usage from the upstream when needed; a response without
-  usage cannot be priced.
+- Streaming Chat Completions always sets `stream_options.include_usage` to
+  `true`, overriding caller opt-outs and preserving other options. Missing or
+  null options are created; non-object options get `400`. An upstream response
+  without usage still cannot be priced.
 
 ## Budget enforcement
 

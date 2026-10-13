@@ -78,6 +78,8 @@ class Upstream(BaseHTTPRequestHandler):
             else:
                 payload = json.dumps({"usage": usage}).encode()
         else:
+            if body.get("stream"):
+                assert body.get("stream_options", {}).get("include_usage") is True
             # OpenAI-compatible cache reporting: no DeepSeek-specific fields.
             usage = {"prompt_tokens": 300, "prompt_tokens_details": {"cached_tokens": 100},
                      "completion_tokens": 1000000}
@@ -156,13 +158,15 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             else:
                 raise AssertionError("server did not start")
 
-            def request(model, route="/chat/completions", stream=False, user=0, metadata=None, extra_headers=None):
+            def request(model, route="/chat/completions", stream=False, user=0, metadata=None, extra_headers=None, body_fields=None):
                 connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
                 headers = {"Content-Type": "application/json", "Authorization": "Bearer " + keys[user],
                            "x-opencode-session": "conversation-1", "session-id": "codex-conversation-1", "thread-id": "codex-thread-1"}
                 if extra_headers is not None:
                     headers.update(extra_headers)
                 body = {"model": model, "stream": stream}
+                if body_fields is not None:
+                    body.update(body_fields)
                 body["input" if route == "/responses" else "messages"] = "local prompt" if route == "/responses" else []
                 if metadata is not None:
                     body["metadata"] = metadata
@@ -200,6 +204,25 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][1]["User-Agent"] == "llm-budget/1.0"
             assert seen[-1][1]["x-opencode-session"] == "conversation-1"
             assert seen[-1][2]["model"] == "deepseek-v4-flash"
+
+            for options in (None, {}, {"include_usage": False, "other_option": "preserved"}):
+                assert request("opencode-go/deepseek-v4-flash", stream=True,
+                               body_fields={"stream_options": options})[0] == 200
+                last_row()
+                assert seen[-1][2]["stream_options"] == dict(options or {}, include_usage=True)
+
+            for options in (False, "invalid", [], 1):
+                calls_before = len(seen)
+                rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+                assert request("opencode-go/deepseek-v4-flash", stream=True,
+                               body_fields={"stream_options": options})[0] == 400
+                assert len(seen) == calls_before
+                assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
+
+            assert request("opencode-go/deepseek-v4-flash",
+                           body_fields={"stream_options": {"include_usage": False}})[0] == 200
+            last_row()
+            assert seen[-1][2]["stream_options"] == {"include_usage": False}
 
             assert request("opencode-go/glm-5.3-flash")[0] == 200
             flat = last_row()
