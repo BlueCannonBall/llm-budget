@@ -169,7 +169,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 body = {"model": model, "stream": stream}
                 if body_fields is not None:
                     body.update(body_fields)
-                body["input" if route == "/responses" else "messages"] = "local prompt" if route == "/responses" else []
+                body.setdefault("input" if route == "/responses" else "messages", "local prompt" if route == "/responses" else [])
                 if metadata is not None:
                     body["metadata"] = metadata
                 connection.request("POST", route, json.dumps(body), headers)
@@ -277,6 +277,61 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert openai == 1600090000, openai
             assert seen[-1][0] == "https://api.openai.com/v1/chat/completions"
             assert seen[-1][1]["Authorization"] == "Bearer test-openai"
+
+            assert "service_tier" not in seen[-1][2]
+            for route in ("/chat/completions", "/responses"):
+                blocked_fields = [
+                    {"tools": [{"type": tool_type}]}
+                    for tool_type in ("image_generation", "web_search", "web_search_preview",
+                                      "file_search", "code_interpreter", "shell", "mcp", "tool_search")
+                ]
+                blocked_fields += [{"tools": value} for value in (None, {}, "invalid", [None], [{}], [{"type": 1}])]
+                if route == "/responses":
+                    blocked_fields += [
+                        {"background": True}, {"background": "true"},
+                        {"input": [{"type": "additional_tools", "tools": [{"type": "web_search"}]}]},
+                        {"input": [{"type": "additional_tools"}]},
+                        {"input": [{"type": "additional_tools", "tools": None}]},
+                    ]
+                for fields in blocked_fields:
+                    calls_before = len(seen)
+                    rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+                    status, payload = request("openai/gpt-4.1-mini", route, body_fields=fields)
+                    assert status == 400, (route, fields, status, payload)
+                    assert len(seen) == calls_before
+                    assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
+
+            client_tools = [{"type": "function", "name": "local_function", "parameters": {"type": "object"}},
+                            {"type": "custom", "name": "local_custom"}]
+            image_input = [{"role": "user", "content": [
+                {"type": "input_text", "text": "Describe this image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,local-test-image"},
+            ]}]
+            for stream in (False, True):
+                fields = {"service_tier": "default", "background": False, "tools": client_tools,
+                          "input": image_input + [{"type": "additional_tools", "tools": client_tools}]}
+                assert request("openai/gpt-6.1-sol", "/responses", stream=stream, body_fields=fields)[0] == 200
+                assert last_row() == 10435000
+                assert seen[-1][2]["service_tier"] == "default"
+                assert seen[-1][2]["tools"] == client_tools
+                assert seen[-1][2]["input"] == fields["input"]
+
+            for tier in ("auto", "fast", "priority", "ultrafast", "flex", None, 1):
+                assert request("openai/gpt-6.1-sol", "/responses",
+                               body_fields={"service_tier": tier})[0] == 200
+                assert last_row() == 10435000
+                assert seen[-1][2]["service_tier"] == tier
+
+            # Restrictions are direct-OpenAI-only; do not invent Go billing policy.
+            fields = {"service_tier": "fast", "tools": [{"type": "web_search"}]}
+            assert request("opencode-go/gpt-5.6-luna", "/responses", body_fields=fields)[0] == 200
+            assert last_row() == 828000
+            assert seen[-1][2]["service_tier"] == "fast"
+            assert seen[-1][2]["tools"] == fields["tools"]
+            assert request("opencode-go/claude-haiku-5-5", "/v1/messages",
+                           body_fields={"cache_control": {"type": "ephemeral", "ttl": "1h"}})[0] == 200
+            assert last_row() == 347750
+            assert seen[-1][2]["cache_control"]["ttl"] == "1h"
 
             status, payload = request("openai/gpt-4.1-mini", "/responses")
             assert status == 200 and json.loads(payload)["output"][0]["content"][0]["text"] == "local response"

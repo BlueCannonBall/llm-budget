@@ -159,8 +159,9 @@ curl http://127.0.0.1:8787/responses \
     -d '{"model":"opencode-go/gpt-5.6-luna","input":"Explain this code","stream":true}'
 ```
 
-Responses request fields are forwarded without protocol conversion; only the
-provider-qualified model name is replaced. Both JSON and SSE responses are
+Responses request fields are forwarded without protocol conversion, subject to
+the direct OpenAI accounting restrictions below. The provider-qualified model
+name is replaced. Both JSON and SSE responses are
 passed through. This endpoint implements response creation, not retrieval,
 deletion, cancellation, compaction, or WebSocket transport.
 
@@ -193,6 +194,14 @@ deletion, cancellation, compaction, or WebSocket transport.
 - Messages forwards caller `anthropic-version` and `anthropic-beta` headers
   unchanged. When the version header is absent, it defaults to `2023-06-01`.
   The upstream decides whether supplied versions and beta flags are supported.
+- Direct OpenAI permits only client-executed `function` and `custom` tools.
+  Hosted tools, including image generation, web/file search, and hosted execution,
+  get `400` because their additional charges are not accounted for. This also
+  applies to tool definitions in Responses `additional_tools` input items.
+  Ordinary image inputs remain permitted. These restrictions do not apply to Go
+  or DeepSeek; Go Haiku cache-duration settings are unchanged.
+- Direct OpenAI Responses rejects `background: true` with `400`: later usage
+  cannot be captured by this proxy. Omitted or false `background` is permitted.
 - The upstream response is streamed back as received, with `Content-Type` and
   `Retry-After` passed through. Responses are capped at 32,000,000 bytes.
 - All upstream fetches use a 120-second socket read timeout and a 30-second
@@ -462,9 +471,13 @@ previously stored request costs are not recalculated.
   `error`/`message_stop` and Responses terminal event types do not determine the
   stored state. A failed model response or a stream that closes before its
   terminal event can be marked completed if the HTTP fetch succeeds.
-- Background Responses can return before usage is available; later polling is
-  not proxied or accounted for. Tool fees and nonstandard service-tier pricing
-  are not included in the text-token estimate.
+- Background Responses through Go or DeepSeek can return before usage is available;
+  later polling is not proxied or accounted for. Direct OpenAI blocks background
+  requests and hosted tools rather than estimating their unaccounted charges.
+  Service tiers are forwarded unchanged without tier-specific accounting; omitted
+  tiers can inherit provider project defaults. All providers still use their
+  cataloged token rates without service-tier pricing, and Go/DeepSeek estimates
+  do not include additional tool fees.
 - Proxy-generated errors are plain text, not provider-native JSON error objects.
 - Missing usage or an unavailable pricing schedule can leave a dispatched request
   without a recorded cost. The multiplier admission check does not eliminate these

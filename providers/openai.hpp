@@ -5,6 +5,22 @@
 namespace providers {
     class OpenAIProvider final : public ConfiguredProvider {
     protected:
+        static std::optional<std::string_view> validate_tools(const SJSON::JSValue& tools) {
+            if (!tools.is_array()) return "tools must be an array";
+
+            for (const auto& tool : tools.array()) {
+                if (!tool.is_object()) return "Each tool must be an object";
+
+                auto type = tool.object().find("type");
+                if (type == tool.object().end() || !type->second.is_string()) return "Each tool must have a string type";
+                if (type->second.string() != "function" && type->second.string() != "custom") {
+                    return "Only client-executed function and custom tools are supported; hosted tool charges are not accounted for";
+                }
+            }
+
+            return std::nullopt;
+        }
+
         inline static constexpr Provider provider_definition {
             .name = "openai",
             .chat_completions_base_url = "https://api.openai.com/v1",
@@ -258,6 +274,36 @@ namespace providers {
 
         std::span<const Model> models() const override {
             return model_catalog;
+        }
+
+        std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
+            if (protocol == PROTOCOL_RESPONSES) {
+                if (auto background = body.find("background"); background != body.end()) {
+                    if (!background->second.is_boolean()) return "background must be a boolean";
+                    if (background->second.boolean()) return "Background Responses are not supported; later usage is not accounted for";
+                }
+            }
+
+            if (auto tools = body.find("tools"); tools != body.end()) {
+                if (auto error = validate_tools(tools->second)) return error;
+            }
+
+            if (protocol == PROTOCOL_RESPONSES) {
+                if (auto input = body.find("input"); input != body.end() && input->second.is_array()) {
+                    for (const auto& item : input->second.array()) {
+                        if (!item.is_object()) continue;
+
+                        auto type = item.object().find("type");
+                        if (type == item.object().end() || !type->second.is_string() || type->second.string() != "additional_tools") continue;
+
+                        auto tools = item.object().find("tools");
+                        if (tools == item.object().end()) return "additional_tools input items must contain tools";
+                        if (auto error = validate_tools(tools->second)) return error;
+                    }
+                }
+            }
+
+            return ConfiguredProvider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
         }
     };
 } // namespace providers
