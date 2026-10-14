@@ -280,6 +280,13 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
 
             assert seen[-1][2]["service_tier"] == "default"
             for model in ("openai/gpt-6.1-sol", "opencode-go/gpt-5.6-luna", "deepseek/deepseek-flash"):
+                for route in ("/chat/completions", "/responses"):
+                    for tier in ("auto", "fast", "priority", "ultrafast", "flex", None, 1):
+                        calls_before = len(seen)
+                        rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+                        assert request(model, route, body_fields={"service_tier": tier})[0] == 400
+                        assert len(seen) == calls_before
+                        assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
                 for stream in (False, True):
                     for background in (True, "true", None, 1, [], {}):
                         calls_before = len(seen)
@@ -292,6 +299,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                     assert request(model, "/responses", stream=stream, body_fields={"background": False})[0] == 200
                     assert last_row() is not None
                     assert seen[-1][2]["background"] is False
+                    assert seen[-1][2]["service_tier"] == "default"
 
             for route in ("/chat/completions", "/responses"):
                 blocked_fields = [
@@ -333,16 +341,38 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 assert seen[-1][2]["tools"] == client_tools
                 assert seen[-1][2]["input"] == fields["input"]
 
-            # Tool/tier restrictions are direct-OpenAI-only; do not invent Go billing policy.
-            fields = {"service_tier": "fast", "tools": [{"type": "web_search"}]}
+            # Tool restrictions remain direct-OpenAI-only.
+            fields = {"tools": [{"type": "web_search"}]}
             assert request("opencode-go/gpt-5.6-luna", "/responses", body_fields=fields)[0] == 200
             assert last_row() == 828000
-            assert seen[-1][2]["service_tier"] == "fast"
+            assert seen[-1][2]["service_tier"] == "default"
             assert seen[-1][2]["tools"] == fields["tools"]
             assert request("opencode-go/claude-haiku-5-5", "/v1/messages",
                            body_fields={"cache_control": {"type": "ephemeral", "ttl": "1h"}})[0] == 200
             assert last_row() == 347750
-            assert seen[-1][2]["cache_control"]["ttl"] == "1h"
+            assert seen[-1][2]["cache_control"]["ttl"] == "5m"
+            cache_marker = {"type": "ephemeral", "ttl": "1h"}
+            fields = {
+                "system": [{"type": "text", "text": "system", "cache_control": cache_marker}],
+                "tools": [{"name": "local", "input_schema": {"type": "object"}, "cache_control": cache_marker}],
+                "messages": [{"role": "user", "content": [
+                    {"type": "tool_result", "content": [{"type": "text", "text": "nested", "cache_control": cache_marker}]},
+                    {"type": "tool_use", "input": {"cache_control": cache_marker}, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "no marker"},
+                ]}],
+            }
+            for model in ("opencode-go/claude-haiku-5-5", "deepseek/deepseek-flash"):
+                assert request(model, "/v1/messages", body_fields=fields)[0] == 200
+                assert last_row() is not None
+                forwarded = seen[-1][2]
+                assert forwarded["system"][0]["cache_control"]["ttl"] == "5m"
+                assert forwarded["tools"][0]["cache_control"]["ttl"] == "5m"
+                content = forwarded["messages"][0]["content"]
+                assert content[0]["content"][0]["cache_control"]["ttl"] == "5m"
+                assert content[1]["cache_control"]["ttl"] == "5m"
+                assert content[1]["input"]["cache_control"]["ttl"] == "1h"
+                assert "cache_control" not in content[2]
+                assert "cache_control" not in forwarded
 
             status, payload = request("openai/gpt-4.1-mini", "/responses")
             assert status == 200 and json.loads(payload)["output"][0]["content"][0]["text"] == "local response"
@@ -402,7 +432,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert request("opencode-go/glm-5.3-flash", user=1)[0] == 429
             assert len(seen) == calls + 1
 
-            # A rejected later snapshot must preserve the prior charge.
+            # Defective metadata must not cancel otherwise usable token counts.
             valid_usage = {"prompt_tokens": 300, "completion_tokens": 1000,
                            "prompt_tokens_details": {"cached_tokens": 100}}
             invalid_usage = dict(valid_usage, prompt_cache_hit_tokens=None,
@@ -414,7 +444,18 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert last_row() == 1690000
             assert request("openai/gpt-4.1-mini",
                            metadata={"usage_events": [invalid_usage]})[0] == 200
-            assert last_row() is None
+            assert last_row() == 1690000
+            for stream in (False, True):
+                for usage, expected in (
+                    ({"prompt_tokens": 1000, "completion_tokens": 200,
+                      "prompt_tokens_details": {"cached_tokens": 1001}}, 720000),
+                    (dict(valid_usage, prompt_tokens_details="bad"), 1720000),
+                    (dict(valid_usage, prompt_tokens="bad"), 1610000),
+                    (dict(valid_usage, completion_tokens="bad"), 90000),
+                ):
+                    assert request("openai/gpt-4.1-mini", stream=stream,
+                                   metadata={"usage_events": [usage]})[0] == 200
+                    assert last_row() == expected, (usage, last_row(), expected)
 
             # Go's optional null write count must not discard cached reads or
             # prevent the final snapshot from correcting an uncached estimate.
@@ -495,11 +536,11 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
         # Replace one configured provider with a catalog whose pricing can be
         # unavailable. The production routes, transport and database remain real.
         pricing_main = directory / "pricing_main.cpp"
-        pricing_main.write_text('''#include "provider_config.hpp"
+        pricing_main.write_text('''#include "provider_registry.hpp"
 namespace providers {
-    class PricingFixtureProvider final : public ConfiguredProvider {
+    class PricingFixtureProvider final : public Provider {
     protected:
-        inline static constexpr Provider provider_definition {
+        inline static constexpr ProviderDefinition provider_definition {
             .name = "pricing-fixture",
             .chat_completions_base_url = "http://127.0.0.1",
             .anthropic_messages_base_url = "http://127.0.0.1",
@@ -520,7 +561,7 @@ namespace providers {
 
     public:
         PricingFixtureProvider():
-            ConfiguredProvider(provider_definition) {
+            Provider(provider_definition) {
             api_key = "local-pricing-fixture";
         }
 
@@ -535,7 +576,7 @@ namespace providers {
         }
     };
 
-    Configuration configure_with_pricing_fixture(SJSON::JSObject keys) {
+    ProviderSet configure_with_pricing_fixture(SJSON::JSObject keys) {
         auto configured = configure(std::move(keys));
         configured.front() = std::make_unique<PricingFixtureProvider>();
         for (auto& provider : configured) {

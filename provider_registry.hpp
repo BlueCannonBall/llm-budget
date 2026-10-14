@@ -1,6 +1,6 @@
 #pragma once
 
-#include "configured_provider.hpp"
+#include "provider.hpp"
 #include "providers/deepseek.hpp"
 #include "providers/openai.hpp"
 #include "providers/opencode_go.hpp"
@@ -13,16 +13,16 @@
 #include <utility>
 
 namespace providers {
-    using Configuration = std::array<std::unique_ptr<ConfiguredProvider>, 3>;
+    using ProviderSet = std::array<std::unique_ptr<Provider>, 3>;
 
     struct ResolvedModel {
-        const ConfiguredProvider* provider;
+        const Provider* provider;
         const Model* model;
     };
 
     namespace detail {
         template <typename T>
-        std::unique_ptr<ConfiguredProvider> make_provider(SJSON::JSObject& keys, std::string_view name) {
+        std::unique_ptr<Provider> make_provider(SJSON::JSObject& keys, std::string_view name) {
             if (auto key = keys.find(std::string(name)); key != keys.end()) {
                 return std::make_unique<T>(std::move(key->second));
             }
@@ -31,7 +31,7 @@ namespace providers {
         }
     } // namespace detail
 
-    inline Configuration configure(SJSON::JSObject keys) {
+    inline ProviderSet configure(SJSON::JSObject keys) {
         return {
             detail::make_provider<DeepSeekProvider>(keys, "deepseek"),
             detail::make_provider<OpenCodeGoProvider>(keys, "opencode-go"),
@@ -39,7 +39,7 @@ namespace providers {
         };
     }
 
-    inline const ConfiguredProvider* find_provider(const Configuration& configured, std::string_view name) {
+    inline const Provider* find_provider(const ProviderSet& configured, std::string_view name) {
         for (const auto& provider : configured) {
             if (provider && provider->definition().name == name) return provider.get();
         }
@@ -47,7 +47,7 @@ namespace providers {
         return nullptr;
     }
 
-    inline std::optional<ResolvedModel> resolve(const Configuration& configured, std::string_view name) {
+    inline std::optional<ResolvedModel> resolve(const ProviderSet& configured, std::string_view name) {
         std::string_view provider_name = "deepseek";
         std::string_view model_name = name;
         if (size_t slash = name.find('/'); slash != std::string_view::npos) {
@@ -55,7 +55,7 @@ namespace providers {
             model_name = name.substr(slash + 1);
         }
 
-        const ConfiguredProvider* provider = find_provider(configured, provider_name);
+        const Provider* provider = find_provider(configured, provider_name);
         if (!provider) return std::nullopt;
 
         const Model* model = provider->find_model(model_name);

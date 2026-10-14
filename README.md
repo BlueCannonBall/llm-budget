@@ -195,7 +195,8 @@ deletion, cancellation, compaction, or WebSocket transport.
 - Messages forwards caller `anthropic-version` and `anthropic-beta` headers
   unchanged. When the version header is absent, it defaults to `2023-06-01`.
   The upstream decides whether supplied versions and beta flags are supported.
-- Direct OpenAI requests use standard processing: the proxy explicitly sets
+- Chat Completions and Responses request standard processing for every provider:
+  the proxy explicitly sets
   `service_tier` to `"default"` to avoid inheriting project-level Fast defaults.
   Caller-supplied tiers other than `"default"` (including `"auto"`, Fast/Priority,
   Ultrafast, and Flex) get `400` before admission or upstream dispatch.
@@ -204,7 +205,11 @@ deletion, cancellation, compaction, or WebSocket transport.
   get `400` because their additional charges are not accounted for. This also
   applies to tool definitions in Responses `additional_tools` input items.
   Ordinary image inputs remain permitted. These restrictions do not apply to Go
-  or DeepSeek; Go Haiku cache-duration settings are unchanged.
+  or DeepSeek.
+- Messages normalizes existing ephemeral `cache_control` markers to `ttl: "5m"`,
+  including automatic top-level caching, system blocks, tool definitions, and
+  message content (including nested tool-result content). It does not add cache
+  markers, modify function arguments, or change OpenAI cache retention settings.
 - Responses rejects `background: true` with `400` for every provider before
   admission or upstream dispatch: later usage cannot be captured by this proxy.
   Omitted or false `background` is permitted; non-boolean values get `400`.
@@ -434,9 +439,11 @@ previously stored request costs are not recalculated.
 
 ### Usage accounting
 
-- Chat Completions supports DeepSeek's explicit cache buckets and OpenAI's nested
-  `prompt_tokens_details.cached_tokens`; uncached input derives from total input.
-  Conflicting counts are rejected. Reasoning tokens are already included in output.
+- Chat Completions supports DeepSeek's explicit cache-read and cache-miss counts
+  and OpenAI's nested `prompt_tokens_details.cached_tokens`. An explicit hit count
+  wins over the nested cached count; otherwise the nested count is used. Uncached
+  input derives from the inclusive `prompt_tokens` total when it is present, and
+  from the reported miss count otherwise. Reasoning tokens are already included in output.
   Nested `prompt_tokens_details.cache_write_tokens` counts are charged at the
   model's cache-write rate, replacing ordinary input pricing for those tokens.
 - Messages input, cache reads, and cache writes are priced separately. Streaming
@@ -452,23 +459,26 @@ previously stored request costs are not recalculated.
   a JSON `type`. Initial null usage and output-item events do not overwrite the
   request estimate. See [Responses streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events).
   See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
-  for cache-write accounting on GPT-5.6 and later models. Invalid counts or cache
-  reads plus writes exceeding total input are rejected for accounting.
+  for cache-write accounting on GPT-5.6 and later models. Malformed optional
+  details are ignored. Cache reads are set to zero only when they exceed the input
+  total, and cache writes are limited to the uncached remainder; valid input and
+  output counts remain billable.
 - `cost::calculate()` returns one request cost. The proxy passes it to the existing
   `database::update_request()` function, which stores it in `cost_nanodollars`.
   The database schema and stored costs are unchanged; no migration or additional
   accounting columns are required.
-- Unpriceable usage logs a warning without replacing an earlier estimate. Usage
-  parsers return `cost::UsageResult`, carrying the offending field and rejection
-  reason on failure. Warnings identify the user, request ID, provider, model,
-  protocol, and JSON/SSE event source, followed by `field`, `reason`, and the complete
+- Usage parsers ignore malformed counters independently instead of rejecting an
+  entire usage object. Invalid input does not discard valid output, or vice versa;
+  Messages' disjoint cache/input counters are likewise independent. An optional
+  warning identifies the first ignored defect. Warnings identify the user, request ID, provider, model,
+  and protocol, followed by `field`, `reason`, and the complete
   JSON `usage` value. Unknown fields, nested details, nulls, and malformed values
   are retained without filtering or type-only substitutions. Request headers,
   prompts, and response content outside `usage` are not included.
   Missing usage fields default to zero. Optional Chat Completions/Responses
   `cache_write_tokens: null` likewise means no reported cache-write count; cached
-  reads are still accounted for. Other null counters and malformed or inconsistent
-  counts remain rejected. Incomplete reports can underestimate costs, and unknown
+  reads are still accounted for. Other null counters and malformed values are
+  ignored. Incomplete reports can underestimate costs, and unknown
   costs do not contribute to budget totals.
 
 ## Known limitations
@@ -478,31 +488,15 @@ previously stored request costs are not recalculated.
   stored state. A failed model response or a stream that closes before its
   terminal event can be marked completed if the HTTP fetch succeeds.
 - Background Responses are blocked for every provider because later polling is
-  not proxied or accounted for. Direct OpenAI also blocks hosted tools and
-  nonstandard service tiers rather than estimating their unaccounted charges.
-  Other providers still use their cataloged token rates without additional tool
-  fees or service-tier pricing.
+  not proxied or accounted for. Nonstandard Chat/Responses service tiers are blocked
+  for every provider. Direct OpenAI also blocks hosted tools; other providers still
+  use their cataloged token rates without additional tool fees.
 - Proxy-generated errors are plain text, not provider-native JSON error objects.
 - Missing usage or an unavailable pricing schedule can leave a dispatched request
   without a recorded cost. The multiplier admission check does not eliminate these
   separate post-dispatch accounting failures.
 - Tests cover local HTTP upstream fixtures and accounting, not live provider
   compatibility or exact billing reconciliation.
-
-## Daily catalog verification
-
-`catalog-update-daily.sh` runs the maintenance agent using `CATALOG_UPDATE.md`.
-Before and after the agent, `python3 catalog-check.py` fetches public DeepSeek
-and OpenCode Go documentation and compares numeric catalogs deterministically:
-direct DeepSeek rates, Go model/tier rows, token rates, and both plan allowances.
-Exit 0 means these fields match, 1 means differences, and 2 means verification
-failed. The wrapper propagates failures to cron and logs details in
-`~/.local/state/llm-budget/catalog-update.log`. It does not retry or send alerts.
-OpenAI, protocol support, README, and schedule implementation remain agent checks;
-a successful numeric check is not proof that those are correct.
-
-For offline verification, pass `--go-html <saved-page>` and
-`--deepseek-html <saved-page>` to `catalog-check.py`.
 
 ## Tests
 
@@ -514,7 +508,6 @@ python3 tests/usage_page.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_limits.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_callbacks.py          # GNU linker, g++; uses built obj/*.o
 python3 tests/usage_graph.py
-python3 tests/catalog_check.py           # offline catalog/scheduler regressions
 ```
 
 These tests use temporary directories and dummy keys. None contact external providers.
@@ -530,7 +523,7 @@ multipliers, and admission limits using stored rather than nominal Go costs.
 checking exhausted five-hour, weekly, and combined budgets, reset-based
 `Retry-After`, and disabled (`403`) budgets without contacting the upstream.
 
-`usage_graph.py` checks UTC daily buckets, the rolling cutoff, future-row
+`usage_graph.py` checks UTC calendar-day grouping, the rolling cutoff, future-row
 exclusion, shorter history, missing costs, zero-spending days/users, and escaped
 SVG labels using a temporary SQLite database.
 

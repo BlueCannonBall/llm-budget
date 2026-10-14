@@ -5,8 +5,8 @@
 #include "cli.hpp"
 #include "cost.hpp"
 #include "database.hpp"
-#include "provider_config.hpp"
-#include "providers.hpp"
+#include "provider_registry.hpp"
+#include "provider_types.hpp"
 #include "usage_page.hpp"
 #include <fstream>
 #include <functional>
@@ -36,7 +36,7 @@ const pw::ClientConfig upstream_client_config {
 };
 
 // Request cost accounting.
-void print_cost(uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model, const cost::TokenUsage& token_usage) {
+void log_cost(uint64_t nanodollars, const User& user, request_id_t request_id, std::string_view service, std::string_view model, const cost::TokenUsage& token_usage) {
     std::ostringstream formatted;
     formatted << std::fixed << std::setprecision(9)
               << (double) nanodollars / 1'000'000'000;
@@ -56,8 +56,8 @@ std::string_view protocol_name(providers::Protocol protocol) {
     return "unknown";
 }
 
-void log_usage_failure(std::string_view failure, const cost::UsageError& error, const SJSON::JSValue& usage, const User& user, request_id_t request_id, const providers::Provider& provider, const providers::Model& model, providers::Protocol protocol, std::string_view event) {
-    SPDLOG_WARN("Cost estimate unavailable: {} (user={} id={}, request={}, service={}, model={}, protocol={}, event={}) field={} reason={} usage={}",
+void log_usage_failure(std::string_view failure, const cost::UsageError& error, const SJSON::JSValue& usage, const User& user, request_id_t request_id, const providers::ProviderDefinition& provider, const providers::Model& model, providers::Protocol protocol) {
+    SPDLOG_WARN("Usage accounting warning: {} (user={} id={}, request={}, service={}, model={}, protocol={}) field={} reason={} usage={}",
         failure,
         user.name,
         user.id,
@@ -65,35 +65,50 @@ void log_usage_failure(std::string_view failure, const cost::UsageError& error, 
         provider.name,
         model.name,
         protocol_name(protocol),
-        event,
         error.field,
         error.reason,
         usage.to_string());
 }
 
 void record_request_cost(
-    const cost::UsageResult& token_usage,
     const SJSON::JSValue& raw_usage,
     const User& user,
     request_id_t request_id,
-    const providers::Provider& provider,
+    const providers::ProviderDefinition& provider,
     const providers::Model& model,
-    std::chrono::system_clock::time_point now,
+    std::chrono::system_clock::time_point time,
     const cost::Multiplier& multiplier,
-    providers::Protocol protocol,
-    std::string_view event) {
-    if (!token_usage) {
-        log_usage_failure("Failed to parse usage", token_usage.error(), raw_usage, user, request_id, provider, model, protocol, event);
-        return;
+    providers::Protocol protocol) {
+    cost::UsageError warning {};
+    cost::TokenUsage token_usage;
+    switch (protocol) {
+    case providers::PROTOCOL_CHAT_COMPLETIONS:
+        token_usage = cost::from_chat_completions_usage(raw_usage.object(), &warning);
+        break;
+
+    case providers::PROTOCOL_ANTHROPIC_MESSAGES:
+        token_usage = cost::from_anthropic_usage(raw_usage.object(), &warning);
+        break;
+
+    case providers::PROTOCOL_RESPONSES:
+        token_usage = cost::from_responses_usage(raw_usage.object(), &warning);
+        break;
+
+    default:
+        throw std::invalid_argument("Unknown usage protocol");
     }
 
-    auto amount = cost::calculate(model, *token_usage, now, multiplier);
+    if (!warning.field.empty()) {
+        log_usage_failure("Ignoring malformed usage metadata", warning, raw_usage, user, request_id, provider, model, protocol);
+    }
+
+    auto amount = cost::calculate(model, token_usage, time, multiplier);
     if (!amount) {
-        log_usage_failure("Failed to calculate cost", {"cost", "pricing_schedule_or_arithmetic_unavailable"}, raw_usage, user, request_id, provider, model, protocol, event);
+        log_usage_failure("Failed to calculate cost", {"cost", "pricing_schedule_or_arithmetic_unavailable"}, raw_usage, user, request_id, provider, model, protocol);
         return;
     }
 
-    print_cost(*amount, user, request_id, provider.name, model.name, *token_usage);
+    log_cost(*amount, user, request_id, provider.name, model.name, token_usage);
     database::update_request(request_id, *amount);
 }
 
@@ -297,7 +312,7 @@ int main(int argc, char** argv) {
     if (argc > 1) return run_cli(argc, argv);
     database::init();
 
-    providers::Configuration configured;
+    providers::ProviderSet configured;
     {
         std::ifstream keys_file("keys.json");
         if (!keys_file.is_open()) {
@@ -482,8 +497,7 @@ int main(int argc, char** argv) {
                                 }
 
                                 if (auto usage_it = response->find("usage"); usage_it != response->end() && usage_it->second.is_object()) {
-                                    auto usage = (protocol == providers::PROTOCOL_RESPONSES) ? cost::from_responses_usage(usage_it->second.object()) : cost::from_chat_completions_usage(usage_it->second.object());
-                                    record_request_cost(usage, usage_it->second, user, request_id, *definition, *selected_model, now, multiplier, protocol, protocol == providers::PROTOCOL_RESPONSES ? "sse.response_terminal" : "sse.message");
+                                    record_request_cost(usage_it->second, user, request_id, *definition, *selected_model, now, multiplier, protocol);
                                 }
 
                                 return true;
@@ -492,11 +506,10 @@ int main(int argc, char** argv) {
                             SJSON::Parse json_parser;
                             json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, protocol, request_id = *request_id](const SJSON::JSValue& usage) {
                                 if (!usage.is_object()) {
-                                    log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, usage, user, request_id, *definition, *selected_model, protocol, "json.usage");
+                                    log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, usage, user, request_id, *definition, *selected_model, protocol);
                                     return;
                                 }
-                                auto tokens = protocol == providers::PROTOCOL_RESPONSES ? cost::from_responses_usage(usage.object()) : cost::from_chat_completions_usage(usage.object());
-                                record_request_cost(tokens, usage, user, request_id, *definition, *selected_model, now, multiplier, protocol, "json.usage");
+                                record_request_cost(usage, user, request_id, *definition, *selected_model, now, multiplier, protocol);
                             });
 
                             pw::Response inbound_resp;
@@ -668,7 +681,7 @@ int main(int argc, char** argv) {
                             for (const auto& [field, value] : usage_it->second.object()) {
                                 current_usage.object()[field] = value;
                             }
-                            record_request_cost(cost::from_anthropic_usage(current_usage.object()), current_usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_ANTHROPIC_MESSAGES, event.type);
+                            record_request_cost(current_usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_ANTHROPIC_MESSAGES);
 
                             return true;
                         });
@@ -676,10 +689,10 @@ int main(int argc, char** argv) {
                         SJSON::Parse json_parser;
                         json_parser.listen("usage", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
                             if (!usage.is_object()) {
-                                log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, usage, user, request_id, *definition, *selected_model, providers::PROTOCOL_ANTHROPIC_MESSAGES, "json.usage");
+                                log_usage_failure("Failed to parse usage", {"usage", "expected_object"}, usage, user, request_id, *definition, *selected_model, providers::PROTOCOL_ANTHROPIC_MESSAGES);
                                 return;
                             }
-                            record_request_cost(cost::from_anthropic_usage(usage.object()), usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_ANTHROPIC_MESSAGES, "json.usage");
+                            record_request_cost(usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_ANTHROPIC_MESSAGES);
                         });
 
                         pw::Response inbound_resp;

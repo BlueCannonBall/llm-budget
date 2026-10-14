@@ -4,7 +4,7 @@
 #include <string_view>
 
 namespace providers {
-    struct Provider {
+    struct ProviderDefinition {
         std::string_view name;
         std::string_view chat_completions_base_url;
         std::string_view anthropic_messages_base_url;

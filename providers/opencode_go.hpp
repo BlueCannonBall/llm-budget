@@ -1,13 +1,13 @@
 #pragma once
 
-#include "../configured_provider.hpp"
+#include "../provider.hpp"
 #include <stdexcept>
 #include <stdint.h>
 
 namespace providers {
-    class OpenCodeGoProvider final : public ConfiguredProvider {
+    class OpenCodeGoProvider final : public Provider {
     protected:
-        inline static constexpr Provider provider_definition {
+        inline static constexpr ProviderDefinition provider_definition {
             .name = "opencode-go",
             .chat_completions_base_url = "https://opencode.ai/zen/go/v1",
             .anthropic_messages_base_url = "https://opencode.ai/zen/go",
@@ -289,10 +289,10 @@ namespace providers {
 
     public:
         OpenCodeGoProvider():
-            ConfiguredProvider(provider_definition) {}
+            Provider(provider_definition) {}
 
         explicit OpenCodeGoProvider(SJSON::JSValue&& config):
-            ConfiguredProvider(provider_definition) {
+            Provider(provider_definition) {
             if (!config.is_object()) {
                 throw std::invalid_argument("opencode-go must contain api_key and plan");
             }
@@ -343,7 +343,7 @@ namespace providers {
         }
 
         std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            if (auto error = ConfiguredProvider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
+            if (auto error = Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
 
             auto user_agent = inbound_headers.find("User-Agent");
             if (user_agent != inbound_headers.end() && !user_agent->second.empty()) {

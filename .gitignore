@@ -7,3 +7,7 @@ compile_commands.json
 keys.json
 /DEPLOY.md
 /usage.svg
+/CATALOG_UPDATE.md
+/catalog-update-daily.sh
+/catalog-check.py
+/tests/catalog_check.py

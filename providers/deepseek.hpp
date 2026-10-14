@@ -1,11 +1,11 @@
 #pragma once
 
-#include "../configured_provider.hpp"
+#include "../provider.hpp"
 
 namespace providers {
-    class DeepSeekProvider final : public ConfiguredProvider {
+    class DeepSeekProvider final : public Provider {
     protected:
-        inline static constexpr Provider provider_definition {
+        inline static constexpr ProviderDefinition provider_definition {
             .name = "deepseek",
             .chat_completions_base_url = "https://api.deepseek.com",
             .anthropic_messages_base_url = "https://api.deepseek.com/anthropic",
@@ -36,7 +36,7 @@ namespace providers {
 
     public:
         explicit DeepSeekProvider(SJSON::JSValue&& config = {}):
-            ConfiguredProvider(provider_definition) {
+            Provider(provider_definition) {
             api_key = read_api_key(std::move(config));
         }
 
@@ -45,7 +45,7 @@ namespace providers {
         }
 
         std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            if (auto error = ConfiguredProvider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
+            if (auto error = Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
 
             if (protocol == PROTOCOL_CHAT_COMPLETIONS) {
                 body["user_id"] = user_name;

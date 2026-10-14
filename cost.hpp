@@ -1,10 +1,9 @@
 #pragma once
 
 #include "SJSON/src/value.hpp"
-#include "providers.hpp"
+#include "provider_types.hpp"
 #include <chrono>
 #include <cmath>
-#include <expected>
 #include <limits>
 #include <optional>
 #include <stdint.h>
@@ -20,12 +19,11 @@ namespace cost {
         uint64_t cache_creation_tokens;
     };
 
+    // The first unusable usage field, reported by the parsers below.
     struct UsageError {
         std::string_view field;
         std::string_view reason;
     };
-
-    using UsageResult = std::expected<TokenUsage, UsageError>;
 
     struct Multiplier {
         uint64_t numerator;
@@ -40,27 +38,43 @@ namespace cost {
     }
 
     namespace detail {
-
-        inline std::expected<uint64_t, UsageError> token_count(const SJSON::JSObject& usage, std::string_view field, std::string_view path = {}) {
+        // Reads one token counter. An absent counter, or a malformed one, yields
+        // nothing and records the first malformed field; the caller keeps the
+        // counters it could read.
+        inline std::optional<uint64_t> token_count(const SJSON::JSObject& usage, std::string_view field, UsageError* warning = nullptr, std::string_view path = {}) {
             if (path.empty()) path = field;
+
             auto value = usage.find(std::string(field));
+            if (value == usage.end()) return std::nullopt;
             // Optional cache-write metadata can explicitly report no count.
-            if (value == usage.end() || (value->second.is_null() && field == "cache_write_tokens")) return 0;
-            if (!value->second.is_number()) return std::unexpected(UsageError {path, "expected_number"});
+            if (value->second.is_null() && field == "cache_write_tokens") return 0;
 
-            double count = value->second.number();
-            if (!std::isfinite(count)) return std::unexpected(UsageError {path, "nonfinite_count"});
-            if (count < 0) return std::unexpected(UsageError {path, "negative_count"});
-            if (count > 9007199254740991.0) return std::unexpected(UsageError {path, "count_exceeds_exact_integer_range"});
-            if (std::trunc(count) != count) return std::unexpected(UsageError {path, "fractional_count"});
+            std::string_view defect;
+            if (!value->second.is_number()) {
+                defect = "expected_number";
+            } else {
+                double count = value->second.number();
+                if (!std::isfinite(count)) {
+                    defect = "nonfinite_count";
+                } else if (count < 0) {
+                    defect = "negative_count";
+                } else if (count > 9007199254740991.0) {
+                    defect = "count_exceeds_exact_integer_range";
+                } else if (std::trunc(count) != count) {
+                    defect = "fractional_count";
+                } else {
+                    return (uint64_t) count;
+                }
+            }
 
-            return (uint64_t) count;
+            if (warning && warning->field.empty()) *warning = {path, defect};
+            return std::nullopt;
         }
 
         // National days off in China's published 2026 holiday calendar. Weekend dates
         // need no separate entry. Make-up working weekends remain off-peak.
         // https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
-        inline bool chinese_public_holiday_2026(std::chrono::year_month_day day) {
+        inline bool is_chinese_public_holiday_2026(std::chrono::year_month_day day) {
             using namespace std::chrono;
 
             auto holiday = [day](unsigned month, unsigned first, unsigned last) {
@@ -70,22 +84,22 @@ namespace cost {
             return holiday(1, 1, 3) || holiday(2, 15, 23) || holiday(4, 4, 6) || holiday(5, 1, 5) || holiday(6, 19, 21) || holiday(9, 25, 27) || holiday(10, 1, 7);
         }
 
-        inline std::optional<bool> deepseek_peak(std::chrono::sys_seconds at) {
+        inline std::optional<bool> is_deepseek_peak(std::chrono::sys_seconds time) {
             using namespace std::chrono;
             // Peak hours are Mon-Fri, 01:00-04:00 and 06:00-10:00 UTC,
             // excluding Chinese public holidays (determined in Beijing time).
-            sys_days beijing_day = floor<days>(at + 8h);
+            sys_days beijing_day = floor<days>(time + 8h);
             year_month_day date {beijing_day};
             if (date.year() != 2026y) return std::nullopt; // No holiday calendar for other years.
 
-            int hour_utc = duration_cast<hours>(at - floor<days>(at)).count();
-            return weekday {beijing_day}.iso_encoding() <= 5 && !chinese_public_holiday_2026(date) && ((hour_utc >= 1 && hour_utc < 4) || (hour_utc >= 6 && hour_utc < 10));
+            int hour_utc = duration_cast<hours>(time - floor<days>(time)).count();
+            return weekday {beijing_day}.iso_encoding() <= 5 && !is_chinese_public_holiday_2026(date) && ((hour_utc >= 1 && hour_utc < 4) || (hour_utc >= 6 && hour_utc < 10));
         }
 
-        inline bool weekday_utc_peak(std::chrono::sys_seconds at) {
+        inline bool is_weekday_utc_peak(std::chrono::sys_seconds time) {
             using namespace std::chrono;
-            auto day = floor<days>(at);
-            int hour = duration_cast<hours>(at - day).count();
+            auto day = floor<days>(time);
+            int hour = duration_cast<hours>(time - day).count();
 
             return weekday {day}.iso_encoding() <= 5 && ((hour >= 1 && hour < 4) || (hour >= 6 && hour < 10));
         }
@@ -108,109 +122,84 @@ namespace cost {
 
             return (uint64_t) result;
         }
+
     } // namespace detail
 
-    // prompt_tokens includes both cache buckets. Nested cached_tokens and explicit
-    // cache counts must agree when both are present.
-    inline UsageResult from_chat_completions_usage(const SJSON::JSObject& usage) {
-        auto input = detail::token_count(usage, "prompt_tokens");
-        auto hits = detail::token_count(usage, "prompt_cache_hit_tokens");
-        auto misses = detail::token_count(usage, "prompt_cache_miss_tokens");
-        auto output = detail::token_count(usage, "completion_tokens");
-        if (!input) return std::unexpected(input.error());
-        if (!hits) return std::unexpected(hits.error());
-        if (!misses) return std::unexpected(misses.error());
-        if (!output) return std::unexpected(output.error());
+    // prompt_tokens is the inclusive input total. DeepSeek reports explicit hit
+    // and miss counts; OpenAI nests the same counts under prompt_tokens_details.
+    inline TokenUsage from_chat_completions_usage(const SJSON::JSObject& usage, UsageError* warning = nullptr) {
+        auto input = detail::token_count(usage, "prompt_tokens", warning);
+        auto reads = detail::token_count(usage, "prompt_cache_hit_tokens", warning);
+        auto misses = detail::token_count(usage, "prompt_cache_miss_tokens", warning);
+        uint64_t output = detail::token_count(usage, "completion_tokens", warning).value_or(0);
+        uint64_t writes = 0;
 
-        bool have_hits = usage.contains("prompt_cache_hit_tokens");
-        bool have_misses = usage.contains("prompt_cache_miss_tokens");
-        std::string_view hits_field = "prompt_cache_hit_tokens";
-        uint64_t created = 0;
-        if (auto details = usage.find("prompt_tokens_details"); details != usage.end() && !details->second.is_null()) {
-            if (!details->second.is_object()) return std::unexpected(UsageError {"prompt_tokens_details", "expected_object"});
+        if (auto details = usage.find("prompt_tokens_details"); details != usage.end() && details->second.is_object()) {
+            const SJSON::JSObject& fields = details->second.object();
+            if (!reads) reads = detail::token_count(fields, "cached_tokens", warning, "prompt_tokens_details.cached_tokens");
+            writes = detail::token_count(fields, "cache_write_tokens", warning, "prompt_tokens_details.cache_write_tokens").value_or(0);
+        }
 
-            auto cached = detail::token_count(details->second.object(), "cached_tokens", "prompt_tokens_details.cached_tokens");
-            auto writes = detail::token_count(details->second.object(), "cache_write_tokens", "prompt_tokens_details.cache_write_tokens");
-            if (!cached) return std::unexpected(cached.error());
-            if (!writes) return std::unexpected(writes.error());
-
-            created = *writes;
-
-            if (details->second.object().contains("cached_tokens")) {
-                if (have_hits && *hits != *cached) return std::unexpected(UsageError {"prompt_cache_hit_tokens", "conflicts_with_prompt_tokens_details.cached_tokens"});
-                hits = cached;
-                have_hits = true;
-                hits_field = "prompt_tokens_details.cached_tokens";
+        uint64_t reads_value = reads.value_or(0);
+        uint64_t misses_value = misses.value_or(0);
+        if (input) {
+            // The inclusive total decides the uncached remainder.
+            if (misses) {
+                misses_value = *misses;
+                reads_value = *input > misses_value ? *input - misses_value : 0;
+            } else {
+                if (reads_value > *input) reads_value = 0;
+                misses_value = *input - reads_value;
             }
         }
 
-        if (usage.contains("prompt_tokens")) {
-            if (*hits > *input) return std::unexpected(UsageError {hits_field, "cache_reads_exceed_prompt_tokens"});
-            if (*misses > *input) return std::unexpected(UsageError {"prompt_cache_miss_tokens", "cache_misses_exceed_prompt_tokens"});
-
-            if (!have_hits && have_misses) hits = *input - *misses;
-            if (have_misses && *misses != *input - *hits) return std::unexpected(UsageError {"prompt_cache_miss_tokens", "cache_buckets_do_not_sum_to_prompt_tokens"});
-            misses = *input - *hits;
-        }
-
-        if (created > *misses) return std::unexpected(UsageError {"prompt_tokens_details.cache_write_tokens", "cache_writes_exceed_cache_misses"});
-
-        return TokenUsage {*hits, *misses, *output, created};
+        if (writes > misses_value) writes = misses_value;
+        return TokenUsage {reads_value, misses_value, output, writes};
     }
 
-    // Responses input includes cached tokens; output includes reasoning tokens.
-    inline UsageResult from_responses_usage(const SJSON::JSObject& usage) {
-        auto input = detail::token_count(usage, "input_tokens");
-        auto output = detail::token_count(usage, "output_tokens");
-        if (!input) return std::unexpected(input.error());
-        if (!output) return std::unexpected(output.error());
+    // input_tokens is the inclusive input total, and input_tokens_details holds
+    // cache reads and writes that are subsets of it.
+    inline TokenUsage from_responses_usage(const SJSON::JSObject& usage, UsageError* warning = nullptr) {
+        auto input = detail::token_count(usage, "input_tokens", warning);
+        uint64_t output = detail::token_count(usage, "output_tokens", warning).value_or(0);
+        uint64_t reads = 0;
+        uint64_t writes = 0;
 
-        uint64_t hits = 0;
-        uint64_t created = 0;
-        if (auto details = usage.find("input_tokens_details"); details != usage.end() && !details->second.is_null()) {
-            if (!details->second.is_object()) return std::unexpected(UsageError {"input_tokens_details", "expected_object"});
-
-            auto cached = detail::token_count(details->second.object(), "cached_tokens", "input_tokens_details.cached_tokens");
-            auto writes = detail::token_count(details->second.object(), "cache_write_tokens", "input_tokens_details.cache_write_tokens");
-            if (!cached) return std::unexpected(cached.error());
-            if (!writes) return std::unexpected(writes.error());
-
-            created = *writes;
-
-            hits = *cached;
+        if (auto details = usage.find("input_tokens_details"); details != usage.end() && details->second.is_object()) {
+            const SJSON::JSObject& fields = details->second.object();
+            reads = detail::token_count(fields, "cached_tokens", warning, "input_tokens_details.cached_tokens").value_or(0);
+            writes = detail::token_count(fields, "cache_write_tokens", warning, "input_tokens_details.cache_write_tokens").value_or(0);
         }
-        if (hits > *input) return std::unexpected(UsageError {"input_tokens_details.cached_tokens", "cache_reads_exceed_input_tokens"});
-        if (created > *input - hits) return std::unexpected(UsageError {"input_tokens_details.cache_write_tokens", "cache_writes_exceed_cache_misses"});
 
-        return TokenUsage {hits, *input - hits, *output, created};
+        uint64_t uncached = writes;
+        if (input) {
+            if (reads > *input) reads = 0;
+            uncached = *input - reads;
+        }
+
+        if (writes > uncached) writes = uncached;
+        return TokenUsage {reads, uncached, output, writes};
     }
 
-    // Missing fields become zero. Input excludes cache reads and writes; retain
-    // writes in cache_miss_tokens and separate them when applying rates.
-    inline UsageResult from_anthropic_usage(const SJSON::JSObject& usage) {
-        auto input = detail::token_count(usage, "input_tokens");
-        auto hits = detail::token_count(usage, "cache_read_input_tokens");
-        auto created = detail::token_count(usage, "cache_creation_input_tokens");
-        auto output = detail::token_count(usage, "output_tokens");
-        if (!input) return std::unexpected(input.error());
-        if (!hits) return std::unexpected(hits.error());
-        if (!created) return std::unexpected(created.error());
-        if (!output) return std::unexpected(output.error());
-        if (*created > std::numeric_limits<uint64_t>::max() - *input) {
-            return std::unexpected(UsageError {"cache_creation_input_tokens", "input_and_cache_writes_overflow"});
-        }
-
-        return TokenUsage {*hits, *input + *created, *output, *created};
+    // Messages reports disjoint counters: input_tokens excludes the cache counts,
+    // while cache_creation_input_tokens is the cache-write count. An unreadable
+    // field removes only its own charge.
+    inline TokenUsage from_anthropic_usage(const SJSON::JSObject& usage, UsageError* warning = nullptr) {
+        uint64_t input = detail::token_count(usage, "input_tokens", warning).value_or(0);
+        uint64_t reads = detail::token_count(usage, "cache_read_input_tokens", warning).value_or(0);
+        uint64_t writes = detail::token_count(usage, "cache_creation_input_tokens", warning).value_or(0);
+        uint64_t output = detail::token_count(usage, "output_tokens", warning).value_or(0);
+        return TokenUsage {reads, input + writes, output, writes};
     }
 
     // Apply the exact multiplier, then round picodollars up to nanodollars once.
     // Invalid usage, unavailable schedules and overflow return no estimate.
-    inline std::optional<uint64_t> calculate(const providers::Model& model, const TokenUsage& usage, std::chrono::system_clock::time_point at, Multiplier multiplier) {
+    inline std::optional<uint64_t> calculate(const providers::Model& model, const TokenUsage& usage, std::chrono::system_clock::time_point time, Multiplier multiplier) {
         if (multiplier.denominator == 0 || usage.cache_creation_tokens > usage.cache_miss_tokens || usage.cache_hit_tokens > std::numeric_limits<uint64_t>::max() - usage.cache_miss_tokens) {
             return std::nullopt;
         }
 
-        auto seconds = std::chrono::floor<std::chrono::seconds>(at);
+        auto seconds = std::chrono::floor<std::chrono::seconds>(time);
 
         uint64_t input = usage.cache_hit_tokens + usage.cache_miss_tokens;
         const providers::Rates* rates = &model.rates;
@@ -229,7 +218,7 @@ namespace cost {
             break;
 
         case providers::SCHEDULE_DEEPSEEK_2026: {
-            auto scheduled = detail::deepseek_peak(seconds);
+            auto scheduled = detail::is_deepseek_peak(seconds);
             if (!scheduled) return std::nullopt;
 
             peak = *scheduled;
@@ -237,7 +226,7 @@ namespace cost {
         }
 
         case providers::SCHEDULE_WEEKDAY_UTC_DOUBLED:
-            peak = detail::weekday_utc_peak(seconds);
+            peak = detail::is_weekday_utc_peak(seconds);
             break;
         }
 

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../configured_provider.hpp"
+#include "../provider.hpp"
 
 namespace providers {
-    class OpenAIProvider final : public ConfiguredProvider {
+    class OpenAIProvider final : public Provider {
     protected:
         static std::optional<std::string_view> validate_tools(const SJSON::JSValue& tools) {
             if (!tools.is_array()) return "tools must be an array";
@@ -21,7 +21,7 @@ namespace providers {
             return std::nullopt;
         }
 
-        inline static constexpr Provider provider_definition {
+        inline static constexpr ProviderDefinition provider_definition {
             .name = "openai",
             .chat_completions_base_url = "https://api.openai.com/v1",
             .anthropic_messages_base_url = "",
@@ -268,7 +268,7 @@ namespace providers {
 
     public:
         explicit OpenAIProvider(SJSON::JSValue&& config = {}):
-            ConfiguredProvider(provider_definition) {
+            Provider(provider_definition) {
             api_key = read_api_key(std::move(config));
         }
 
@@ -277,13 +277,6 @@ namespace providers {
         }
 
         std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            if (auto tier = body.find("service_tier"); tier != body.end()) {
-                if (!tier->second.is_string() || tier->second.string() != "default") {
-                    return "Only standard service_tier=\"default\" is supported; other service-tier prices are not accounted for";
-                }
-            }
-            body["service_tier"] = "default"; // Explicit standard processing avoids inheriting a project's Fast default
-
             if (auto tools = body.find("tools"); tools != body.end()) {
                 if (auto error = validate_tools(tools->second)) return error;
             }
@@ -303,7 +296,7 @@ namespace providers {
                 }
             }
 
-            return ConfiguredProvider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
+            return Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
         }
     };
 } // namespace providers

@@ -3,7 +3,7 @@
 #include "Polyweb/polyweb.hpp"
 #include "SJSON/src/value.hpp"
 #include "cost.hpp"
-#include "providers.hpp"
+#include "provider_types.hpp"
 #include <optional>
 #include <span>
 #include <string>
@@ -11,12 +11,36 @@
 #include <utility>
 
 namespace providers {
-    class ConfiguredProvider {
+    class Provider {
     protected:
-        const Provider* provider;
+        static void normalize_cache_control(SJSON::JSObject& object) {
+            auto entry = object.find("cache_control");
+            if (entry == object.end() || !entry->second.is_object()) return;
+
+            auto& cache_control = entry->second.object();
+            auto type = cache_control.find("type");
+            if (type != cache_control.end() && type->second.is_string() && type->second.string() == "ephemeral") {
+                cache_control["ttl"] = "5m";
+            }
+        }
+
+        static void normalize_content_cache_controls(SJSON::JSValue& content) {
+            if (!content.is_array()) return;
+
+            for (auto& block : content.array()) {
+                if (!block.is_object()) continue;
+
+                normalize_cache_control(block.object());
+                if (auto nested = block.object().find("content"); nested != block.object().end()) {
+                    normalize_content_cache_controls(nested->second);
+                }
+            }
+        }
+
+        const ProviderDefinition* provider;
         std::string api_key;
 
-        explicit ConfiguredProvider(const Provider& provider):
+        explicit Provider(const ProviderDefinition& provider):
             provider(&provider) {}
 
         static std::string read_api_key(SJSON::JSValue&& config) {
@@ -26,9 +50,9 @@ namespace providers {
         }
 
     public:
-        virtual ~ConfiguredProvider() = default;
+        virtual ~Provider() = default;
 
-        const Provider& definition() const {
+        const ProviderDefinition& definition() const {
             return *provider;
         }
 
@@ -54,6 +78,31 @@ namespace providers {
         }
 
         virtual std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string&) const {
+            if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
+                if (auto tier = body.find("service_tier"); tier != body.end()) {
+                    if (!tier->second.is_string() || tier->second.string() != "default") {
+                        return "Only standard service_tier=\"default\" is supported; other service-tier prices are not accounted for";
+                    }
+                }
+                body["service_tier"] = "default";
+            }
+
+            if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {
+                normalize_cache_control(body);
+                for (const auto* field : {"system", "tools"}) {
+                    if (auto value = body.find(field); value != body.end()) normalize_content_cache_controls(value->second);
+                }
+                if (auto messages = body.find("messages"); messages != body.end() && messages->second.is_array()) {
+                    for (auto& message : messages->second.array()) {
+                        if (!message.is_object()) continue;
+
+                        if (auto content = message.object().find("content"); content != message.object().end()) {
+                            normalize_content_cache_controls(content->second);
+                        }
+                    }
+                }
+            }
+
             if (protocol == PROTOCOL_RESPONSES) {
                 if (auto background = body.find("background"); background != body.end()) {
                     if (!background->second.is_boolean()) return "background must be a boolean";
