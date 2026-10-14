@@ -279,6 +279,20 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][1]["Authorization"] == "Bearer test-openai"
 
             assert seen[-1][2]["service_tier"] == "default"
+            for model in ("openai/gpt-6.1-sol", "opencode-go/gpt-5.6-luna", "deepseek/deepseek-flash"):
+                for stream in (False, True):
+                    for background in (True, "true", None, 1, [], {}):
+                        calls_before = len(seen)
+                        rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+                        status, payload = request(model, "/responses", stream=stream,
+                                                  body_fields={"background": background})
+                        assert status == 400 and b"background" in payload.lower(), (model, background, status, payload)
+                        assert len(seen) == calls_before
+                        assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
+                    assert request(model, "/responses", stream=stream, body_fields={"background": False})[0] == 200
+                    assert last_row() is not None
+                    assert seen[-1][2]["background"] is False
+
             for route in ("/chat/completions", "/responses"):
                 blocked_fields = [
                     {"service_tier": tier}
@@ -292,7 +306,6 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 blocked_fields += [{"tools": value} for value in (None, {}, "invalid", [None], [{}], [{"type": 1}])]
                 if route == "/responses":
                     blocked_fields += [
-                        {"background": True}, {"background": "true"},
                         {"input": [{"type": "additional_tools", "tools": [{"type": "web_search"}]}]},
                         {"input": [{"type": "additional_tools"}]},
                         {"input": [{"type": "additional_tools", "tools": None}]},
@@ -320,7 +333,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 assert seen[-1][2]["tools"] == client_tools
                 assert seen[-1][2]["input"] == fields["input"]
 
-            # Restrictions are direct-OpenAI-only; do not invent Go billing policy.
+            # Tool/tier restrictions are direct-OpenAI-only; do not invent Go billing policy.
             fields = {"service_tier": "fast", "tools": [{"type": "web_search"}]}
             assert request("opencode-go/gpt-5.6-luna", "/responses", body_fields=fields)[0] == 200
             assert last_row() == 828000

@@ -205,8 +205,9 @@ deletion, cancellation, compaction, or WebSocket transport.
   applies to tool definitions in Responses `additional_tools` input items.
   Ordinary image inputs remain permitted. These restrictions do not apply to Go
   or DeepSeek; Go Haiku cache-duration settings are unchanged.
-- Direct OpenAI Responses rejects `background: true` with `400`: later usage
-  cannot be captured by this proxy. Omitted or false `background` is permitted.
+- Responses rejects `background: true` with `400` for every provider before
+  admission or upstream dispatch: later usage cannot be captured by this proxy.
+  Omitted or false `background` is permitted; non-boolean values get `400`.
 - The upstream response is streamed back as received, with `Content-Type` and
   `Retry-After` passed through. Responses are capped at 32,000,000 bytes.
 - All upstream fetches use a 120-second socket read timeout and a 30-second
@@ -476,11 +477,11 @@ previously stored request costs are not recalculated.
   `error`/`message_stop` and Responses terminal event types do not determine the
   stored state. A failed model response or a stream that closes before its
   terminal event can be marked completed if the HTTP fetch succeeds.
-- Background Responses through Go or DeepSeek can return before usage is available;
-  later polling is not proxied or accounted for. Direct OpenAI blocks background
-  requests, hosted tools, and nonstandard service tiers rather than estimating
-  their unaccounted charges. Other providers still use their cataloged token rates
-  without additional tool fees or service-tier pricing.
+- Background Responses are blocked for every provider because later polling is
+  not proxied or accounted for. Direct OpenAI also blocks hosted tools and
+  nonstandard service tiers rather than estimating their unaccounted charges.
+  Other providers still use their cataloged token rates without additional tool
+  fees or service-tier pricing.
 - Proxy-generated errors are plain text, not provider-native JSON error objects.
 - Missing usage or an unavailable pricing schedule can leave a dispatched request
   without a recorded cost. The multiplier admission check does not eliminate these

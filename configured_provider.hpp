@@ -54,6 +54,13 @@ namespace providers {
         }
 
         virtual std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string&) const {
+            if (protocol == PROTOCOL_RESPONSES) {
+                if (auto background = body.find("background"); background != body.end()) {
+                    if (!background->second.is_boolean()) return "background must be a boolean";
+                    if (background->second.boolean()) return "Background Responses are not supported; later usage is not accounted for";
+                }
+            }
+
             if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
                 outbound_headers["Authorization"] = "Bearer " + api_key;
             } else if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {

@@ -284,13 +284,6 @@ namespace providers {
             }
             body["service_tier"] = "default"; // Explicit standard processing avoids inheriting a project's Fast default
 
-            if (protocol == PROTOCOL_RESPONSES) {
-                if (auto background = body.find("background"); background != body.end()) {
-                    if (!background->second.is_boolean()) return "background must be a boolean";
-                    if (background->second.boolean()) return "Background Responses are not supported; later usage is not accounted for";
-                }
-            }
-
             if (auto tools = body.find("tools"); tools != body.end()) {
                 if (auto error = validate_tools(tools->second)) return error;
             }
