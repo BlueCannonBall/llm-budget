@@ -218,13 +218,11 @@ pw::Response receive_proxy_response(std::shared_ptr<Channel<Message>> channel) {
     auto head_message = std::get<HeadMessage>(message);
 
     pw::Headers outbound_resp_headers;
-    auto content_type_it = head_message.headers.find("Content-Type");
-    if (content_type_it != head_message.headers.end()) {
+    if (auto content_type_it = head_message.headers.find("Content-Type"); content_type_it != head_message.headers.end()) {
         outbound_resp_headers["Content-Type"] = content_type_it->second;
     }
 
-    auto retry_after_it = head_message.headers.find("Retry-After");
-    if (retry_after_it != head_message.headers.end()) {
+    if (auto retry_after_it = head_message.headers.find("Retry-After"); retry_after_it != head_message.headers.end()) {
         outbound_resp_headers["Retry-After"] = retry_after_it->second;
     }
 
@@ -487,13 +485,14 @@ int main(int argc, char** argv) {
                                 const SJSON::JSObject* response = &message;
                                 if (protocol == providers::PROTOCOL_RESPONSES) {
                                     if (!is_terminal_response(event.type)) {
-                                        auto type = message.find("type");
-                                        if (type == message.end() || !type->second.is_string() || !is_terminal_response(type->second.string())) return true;
+                                        if (auto type_it = message.find("type"); type_it == message.end() || !type_it->second.is_string() || !is_terminal_response(type_it->second.string())) return true;
                                     }
 
-                                    auto reponse_it = message.find("response");
-                                    if (reponse_it == message.end() || !reponse_it->second.is_object()) return true;
-                                    response = &reponse_it->second.object();
+                                    if (auto response_it = message.find("response"); response_it != message.end() && response_it->second.is_object()) {
+                                        response = &response_it->second.object();
+                                    } else {
+                                        return true;
+                                    }
                                 }
 
                                 if (auto usage_it = response->find("usage"); usage_it != response->end() && usage_it->second.is_object()) {
@@ -669,19 +668,21 @@ int main(int argc, char** argv) {
                             const SJSON::JSObject* event_body = &message;
                             if (event.type == "message_start") {
                                 current_usage.object().clear();
-                                auto message_it = message.find("message");
-                                if (message_it == message.end() || !message_it->second.is_object()) return true;
-                                event_body = &message_it->second.object();
+                                if (auto message_it = message.find("message"); message_it != message.end() && message_it->second.is_object()) {
+                                    event_body = &message_it->second.object();
+                                } else {
+                                    return true;
+                                }
                             }
 
-                            auto usage_it = event_body->find("usage");
-                            if (usage_it == event_body->end() || !usage_it->second.is_object()) return true;
-                            // Counts are cumulative: replace reported fields and
-                            // retain omitted fields, including initial input/cache counts.
-                            for (const auto& [field, value] : usage_it->second.object()) {
-                                current_usage.object()[field] = value;
+                            if (auto usage_it = event_body->find("usage"); usage_it != event_body->end() && usage_it->second.is_object()) {
+                                // Counts are cumulative: replace reported fields and
+                                // retain omitted fields, including initial input/cache counts.
+                                for (const auto& [field, value] : usage_it->second.object()) {
+                                    current_usage.object()[field] = value;
+                                }
+                                record_request_cost(current_usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_ANTHROPIC_MESSAGES);
                             }
-                            record_request_cost(current_usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_ANTHROPIC_MESSAGES);
 
                             return true;
                         });

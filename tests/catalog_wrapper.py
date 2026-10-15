@@ -16,9 +16,9 @@ class CatalogWrapperTests(unittest.TestCase):
             (0, 0, 0, 0, 2),
             (1, 0, 0, 0, 2),
             (2, 0, 0, 0, 2),
-            (2, 0, 2, 2, 2),
+            (2, 0, 2, 0, 2),
             (0, 7, 0, 7, 1),
-            (0, 0, 1, 1, 2),
+            (0, 0, 1, 0, 2),
         ]
         for pre, agent_status, post, expected, checks in cases:
             with self.subTest(pre=pre, agent=agent_status, post=post):
@@ -46,6 +46,8 @@ prompt = sys.argv[5]
 assert prompt.startswith('Test runbook')
 assert 'Exit status: {pre}' in prompt
 assert 'checker diagnostic' in prompt
+assert 'repair catalog-check.py' in prompt
+assert 'must not block deployment' in prompt
 assert Path.cwd() == Path({str(root)!r})
 Path({str(marker)!r}).touch()
 raise SystemExit({agent_status})
@@ -64,6 +66,9 @@ raise SystemExit({agent_status})
                     self.assertEqual(result.returncode, expected)
                     self.assertEqual(int(count.read_text()), checks)
                     self.assertTrue(marker.exists())
+                    log = (root / '.local/state/llm-budget/catalog-update.log').read_text()
+                    if agent_status == 0 and post != 0:
+                        self.assertIn(f'WARNING: final catalog check exited {post}', log)
 
 
 if __name__ == '__main__':

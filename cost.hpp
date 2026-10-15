@@ -44,30 +44,30 @@ namespace cost {
         inline std::optional<uint64_t> token_count(const SJSON::JSObject& usage, std::string_view field, UsageError* warning = nullptr, std::string_view path = {}) {
             if (path.empty()) path = field;
 
-            auto value = usage.find(std::string(field));
-            if (value == usage.end()) return std::nullopt;
-            // Optional cache-write metadata can explicitly report no count.
-            if (value->second.is_null() && field == "cache_write_tokens") return 0;
+            if (auto field_it = usage.find(std::string(field)); field_it != usage.end()) {
+                // Optional cache-write metadata can explicitly report no count.
+                if (field_it->second.is_null() && field == "cache_write_tokens") return 0;
 
-            std::string_view defect;
-            if (!value->second.is_number()) {
-                defect = "expected_number";
-            } else {
-                double count = value->second.number();
-                if (!std::isfinite(count)) {
-                    defect = "nonfinite_count";
-                } else if (count < 0) {
-                    defect = "negative_count";
-                } else if (count > 9007199254740991.0) {
-                    defect = "count_exceeds_exact_integer_range";
-                } else if (std::trunc(count) != count) {
-                    defect = "fractional_count";
+                std::string_view defect;
+                if (!field_it->second.is_number()) {
+                    defect = "expected_number";
                 } else {
-                    return (uint64_t) count;
+                    double count = field_it->second.number();
+                    if (!std::isfinite(count)) {
+                        defect = "nonfinite_count";
+                    } else if (count < 0) {
+                        defect = "negative_count";
+                    } else if (count > 9007199254740991.0) {
+                        defect = "count_exceeds_exact_integer_range";
+                    } else if (std::trunc(count) != count) {
+                        defect = "fractional_count";
+                    } else {
+                        return (uint64_t) count;
+                    }
                 }
-            }
 
-            if (warning && warning->field.empty()) *warning = {path, defect};
+                if (warning && warning->field.empty()) *warning = {path, defect};
+            }
             return std::nullopt;
         }
 
@@ -77,8 +77,8 @@ namespace cost {
         inline bool is_chinese_public_holiday_2026(std::chrono::year_month_day day) {
             using namespace std::chrono;
 
-            auto holiday = [day](unsigned month, unsigned first, unsigned last) {
-                return day.month() == std::chrono::month {month} && unsigned(day.day()) >= first && unsigned(day.day()) <= last;
+            auto holiday = [day](unsigned int month, unsigned int first, unsigned int last) {
+                return day.month() == std::chrono::month {month} && (unsigned int) day.day() >= first && (unsigned int) day.day() <= last;
             };
 
             return holiday(1, 1, 3) || holiday(2, 15, 23) || holiday(4, 4, 6) || holiday(5, 1, 5) || holiday(6, 19, 21) || holiday(9, 25, 27) || holiday(10, 1, 7);
@@ -134,8 +134,8 @@ namespace cost {
         uint64_t output = detail::token_count(usage, "completion_tokens", warning).value_or(0);
         uint64_t writes = 0;
 
-        if (auto details = usage.find("prompt_tokens_details"); details != usage.end() && details->second.is_object()) {
-            const SJSON::JSObject& fields = details->second.object();
+        if (auto details_it = usage.find("prompt_tokens_details"); details_it != usage.end() && details_it->second.is_object()) {
+            const SJSON::JSObject& fields = details_it->second.object();
             if (!reads) reads = detail::token_count(fields, "cached_tokens", warning, "prompt_tokens_details.cached_tokens");
             writes = detail::token_count(fields, "cache_write_tokens", warning, "prompt_tokens_details.cache_write_tokens").value_or(0);
         }
@@ -165,8 +165,8 @@ namespace cost {
         uint64_t reads = 0;
         uint64_t writes = 0;
 
-        if (auto details = usage.find("input_tokens_details"); details != usage.end() && details->second.is_object()) {
-            const SJSON::JSObject& fields = details->second.object();
+        if (auto details_it = usage.find("input_tokens_details"); details_it != usage.end() && details_it->second.is_object()) {
+            const SJSON::JSObject& fields = details_it->second.object();
             reads = detail::token_count(fields, "cached_tokens", warning, "input_tokens_details.cached_tokens").value_or(0);
             writes = detail::token_count(fields, "cache_write_tokens", warning, "input_tokens_details.cache_write_tokens").value_or(0);
         }

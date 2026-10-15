@@ -11,7 +11,7 @@ namespace providers {
         std::string_view responses_base_url;
     };
 
-    enum Protocol : unsigned {
+    enum Protocol : unsigned int {
         PROTOCOL_CHAT_COMPLETIONS = 1,
         PROTOCOL_ANTHROPIC_MESSAGES = 2,
         PROTOCOL_RESPONSES = 4,
@@ -34,7 +34,7 @@ namespace providers {
 
     struct Model {
         std::string_view name;
-        unsigned protocols;
+        unsigned int protocols;
         Rates rates;
 
         Schedule schedule = SCHEDULE_FLAT;
@@ -43,7 +43,7 @@ namespace providers {
         Rates above_threshold_rates {};
 
         constexpr bool supports(Protocol protocol) const {
-            return (protocols & (unsigned) protocol) != 0;
+            return (protocols & (unsigned int) protocol) != 0;
         }
     };
 } // namespace providers

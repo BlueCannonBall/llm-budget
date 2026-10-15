@@ -14,13 +14,11 @@ namespace providers {
     class Provider {
     protected:
         static void normalize_cache_control(SJSON::JSObject& object) {
-            auto entry = object.find("cache_control");
-            if (entry == object.end() || !entry->second.is_object()) return;
-
-            auto& cache_control = entry->second.object();
-            auto type = cache_control.find("type");
-            if (type != cache_control.end() && type->second.is_string() && type->second.string() == "ephemeral") {
-                cache_control["ttl"] = "5m";
+            if (auto cache_control_it = object.find("cache_control"); cache_control_it != object.end() && cache_control_it->second.is_object()) {
+                auto& cache_control = cache_control_it->second.object();
+                if (auto type_it = cache_control.find("type"); type_it != cache_control.end() && type_it->second.is_string() && type_it->second.string() == "ephemeral") {
+                    cache_control["ttl"] = "5m";
+                }
             }
         }
 
@@ -31,8 +29,8 @@ namespace providers {
                 if (!block.is_object()) continue;
 
                 normalize_cache_control(block.object());
-                if (auto nested = block.object().find("content"); nested != block.object().end()) {
-                    normalize_content_cache_controls(nested->second);
+                if (auto content_it = block.object().find("content"); content_it != block.object().end()) {
+                    normalize_content_cache_controls(content_it->second);
                 }
             }
         }
@@ -79,8 +77,8 @@ namespace providers {
 
         virtual std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string&) const {
             if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
-                if (auto tier = body.find("service_tier"); tier != body.end()) {
-                    if (!tier->second.is_string() || tier->second.string() != "default") {
+                if (auto service_tier_it = body.find("service_tier"); service_tier_it != body.end()) {
+                    if (!service_tier_it->second.is_string() || service_tier_it->second.string() != "default") {
                         return "Only standard service_tier=\"default\" is supported; other service-tier prices are not accounted for";
                     }
                 }
@@ -90,23 +88,23 @@ namespace providers {
             if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {
                 normalize_cache_control(body);
                 for (const auto* field : {"system", "tools"}) {
-                    if (auto value = body.find(field); value != body.end()) normalize_content_cache_controls(value->second);
+                    if (auto field_it = body.find(field); field_it != body.end()) normalize_content_cache_controls(field_it->second);
                 }
-                if (auto messages = body.find("messages"); messages != body.end() && messages->second.is_array()) {
-                    for (auto& message : messages->second.array()) {
+                if (auto messages_it = body.find("messages"); messages_it != body.end() && messages_it->second.is_array()) {
+                    for (auto& message : messages_it->second.array()) {
                         if (!message.is_object()) continue;
 
-                        if (auto content = message.object().find("content"); content != message.object().end()) {
-                            normalize_content_cache_controls(content->second);
+                        if (auto content_it = message.object().find("content"); content_it != message.object().end()) {
+                            normalize_content_cache_controls(content_it->second);
                         }
                     }
                 }
             }
 
             if (protocol == PROTOCOL_RESPONSES) {
-                if (auto background = body.find("background"); background != body.end()) {
-                    if (!background->second.is_boolean()) return "background must be a boolean";
-                    if (background->second.boolean()) return "Background Responses are not supported; later usage is not accounted for";
+                if (auto background_it = body.find("background"); background_it != body.end()) {
+                    if (!background_it->second.is_boolean()) return "background must be a boolean";
+                    if (background_it->second.boolean()) return "Background Responses are not supported; later usage is not accounted for";
                 }
             }
 
@@ -116,15 +114,14 @@ namespace providers {
                 outbound_headers["x-api-key"] = api_key;
                 outbound_headers["anthropic-version"] = "2023-06-01";
                 for (const auto* header : {"anthropic-version", "anthropic-beta"}) {
-                    if (auto supplied = inbound_headers.find(header); supplied != inbound_headers.end()) {
-                        outbound_headers[header] = supplied->second;
+                    if (auto header_it = inbound_headers.find(header); header_it != inbound_headers.end()) {
+                        outbound_headers[header] = header_it->second;
                     }
                 }
             }
 
             if (protocol == PROTOCOL_CHAT_COMPLETIONS) {
-                auto stream = body.find("stream");
-                if (stream != body.end() && stream->second.is_boolean() && stream->second.boolean()) {
+                if (auto stream_it = body.find("stream"); stream_it != body.end() && stream_it->second.is_boolean() && stream_it->second.boolean()) {
                     auto& options = body["stream_options"];
                     if (options.is_null()) {
                         options = SJSON::JSObject {};

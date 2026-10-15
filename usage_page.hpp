@@ -123,8 +123,7 @@ inline pw::Response handle_usage_request(const UsagePageAssets& assets, pw::Requ
         return response;
     }
 
-    auto content_type = request.headers.find("Content-Type");
-    if (content_type == request.headers.end() || !pw::string::to_lower_copy(content_type->second).starts_with("application/x-www-form-urlencoded")) {
+    if (auto content_type_it = request.headers.find("Content-Type"); content_type_it == request.headers.end() || !pw::string::to_lower_copy(content_type_it->second).starts_with("application/x-www-form-urlencoded")) {
         return make_usage_page_resp(assets, 400, "<p>Expected a form submission.</p>");
     }
 
@@ -132,10 +131,12 @@ inline pw::Response handle_usage_request(const UsagePageAssets& assets, pw::Requ
     if (body.size() > 256) return make_usage_page_resp(assets, 400, "<p>Invalid form submission.</p>");
 
     pw::QueryParameters form(body);
-    auto api_key = form->find("api_key");
-    if (api_key == form->end()) return make_usage_page_resp(assets, 400, "<p>API key is required.</p>");
-
-    auto user = database::get_user_by_api_key(api_key->second);
+    std::optional<User> user;
+    if (auto api_key_it = form->find("api_key"); api_key_it == form->end()) {
+        return make_usage_page_resp(assets, 400, "<p>API key is required.</p>");
+    } else {
+        user = database::get_user_by_api_key(api_key_it->second);
+    }
     if (!user) return make_usage_page_resp(assets, 401, "<p>Invalid API key.</p>");
 
     auto time = std::chrono::system_clock::now();

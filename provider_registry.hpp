@@ -23,8 +23,8 @@ namespace providers {
     namespace detail {
         template <typename T>
         std::unique_ptr<Provider> make_provider(SJSON::JSObject& keys, std::string_view name) {
-            if (auto key = keys.find(std::string(name)); key != keys.end()) {
-                return std::make_unique<T>(std::move(key->second));
+            if (auto key_it = keys.find(std::string(name)); key_it != keys.end()) {
+                return std::make_unique<T>(std::move(key_it->second));
             }
 
             return std::make_unique<T>();
