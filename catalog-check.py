@@ -271,7 +271,7 @@ def compare(repo, go_html, direct_html):
     check("Go model/tier rows", sorted(expected), sorted(published))
     # Fail closed if the schedule prose no longer states the implemented policy.
     go_text = re.sub(r"<[^>]*>", " ", go_html)
-    if not re.search(r"Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday", go_text):
+    if not re.search(r"Peak hours are 01:00\s*-\s*04:00 and 06:00\s*-\s*10:00 UTC, Monday through Friday(?:; all other hours, including weekends, are Off-Peak\.|, all other hours are Off-Peak\.)", go_text, re.IGNORECASE):
         raise ValueError("could not verify Go peak schedule")
 
     _, local = local_catalog(repo / "providers/deepseek.hpp")

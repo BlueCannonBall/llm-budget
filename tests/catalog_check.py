@@ -17,7 +17,7 @@ spec.loader.exec_module(checker)
 
 
 def go_html(go=80, plus=160):
-    html = "Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday"
+    html = "Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday; all other hours, including weekends, are Off-Peak."
     for plan, allowance in (("go", go), ("go-plus", plus)):
         html += f'<div id="go-pricing-panel-{plan}"><div><table><tr>'
         html += "".join(f"<th>{cell}</th>" for cell in
@@ -169,6 +169,10 @@ class CatalogTests(unittest.TestCase):
     def test_schedule_changed_fails_closed(self):
         with self.assertRaises(ValueError):
             checker.compare(self.repo, go_html().replace("01:00-04:00", "02:00-04:00"), DIRECT_HTML)
+
+    def test_published_schedule_whitespace_and_case(self):
+        html = go_html().replace("01:00-04:00", "01:00 - 04:00").replace("Off-Peak.", "off-peak.")
+        self.assertEqual(checker.compare(self.repo, html, DIRECT_HTML), [])
 
     def test_cli_exit_codes(self):
         go = self.repo / "go.html"

@@ -164,17 +164,9 @@ namespace providers {
             },
 
             {
-                .name = "deepseek-v4-flash",
+                .name = "gemini-4-argon-contributor",
                 .protocols = permitted_protocols,
-                .rates = {.input = 150'000, .cached_read = 3'000, .output = 600'000, .cached_write = 150'000},
-                .schedule = SCHEDULE_WEEKDAY_UTC_DOUBLED,
-            },
-
-            {
-                .name = "deepseek-v4-flash-vision-exp",
-                .protocols = permitted_protocols,
-                .rates = {.input = 150'000, .cached_read = 3'000, .output = 600'000, .cached_write = 150'000},
-                .schedule = SCHEDULE_WEEKDAY_UTC_DOUBLED,
+                .rates = {.input = 4'000'000, .cached_read = 200'000, .output = 20'000'000, .cached_write = 4'000'000},
             },
 
             {
@@ -273,8 +265,7 @@ namespace providers {
             {.model = "qwen3.7-plus", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "deepseek-v4.1-flash", .go_monthly_usd = 80, .go_plus_monthly_usd = 160},
             {.model = "deepseek-v4-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
-            {.model = "deepseek-v4-flash", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
-            {.model = "deepseek-v4-flash-vision-exp", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
+            {.model = "gemini-4-argon-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "hy4-preview", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "hy3", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "space-bunny", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},

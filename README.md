@@ -116,7 +116,7 @@ baseline checked October 14, 2026; Go allowances updated October 14, 2026:
   aliases and old Chat/Reasoner IDs are not separate catalog entries.
   Sources: [models/pricing](https://api-docs.deepseek.com/quick_start/pricing/),
   [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
-- **OpenCode Go:** 33 [documented models](https://opencode.ai/v2/docs/console/go),
+- **OpenCode Go:** 32 [documented models](https://opencode.ai/v2/docs/console/go),
   with token rates, long-context tiers, and both Go/Go Plus allowances. Every
   cataloged Go model is permitted through all three proxy routes. Go determines
   protocol compatibility; upstream rejections are forwarded unchanged, without
