@@ -134,10 +134,9 @@ inline pw::Response handle_usage_request(const UsagePageAssets& assets, pw::Requ
     std::optional<User> user;
     if (auto api_key_it = form->find("api_key"); api_key_it == form->end()) {
         return make_usage_page_resp(assets, 400, "<p>API key is required.</p>");
-    } else {
-        user = database::get_user_by_api_key(api_key_it->second);
+    } else if (!(user = database::get_user_by_api_key(api_key_it->second))) {
+        return make_usage_page_resp(assets, 401, "<p>Invalid API key.</p>");
     }
-    if (!user) return make_usage_page_resp(assets, 401, "<p>Invalid API key.</p>");
 
     auto time = std::chrono::system_clock::now();
     auto usage = database::get_user_usage(user->id, time);

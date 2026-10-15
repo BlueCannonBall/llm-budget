@@ -11,10 +11,12 @@ namespace providers {
             for (const auto& tool : tools.array()) {
                 if (!tool.is_object()) return "Each tool must be an object";
 
-                if (auto type_it = tool.object().find("type"); type_it == tool.object().end() || !type_it->second.is_string()) {
+                if (auto type_it = tool.object().find("type"); type_it != tool.object().end() && type_it->second.is_string()) {
+                    if (type_it->second.string() != "function" && type_it->second.string() != "custom") {
+                        return "Only client-executed function and custom tools are supported; hosted tool charges are not accounted for";
+                    }
+                } else {
                     return "Each tool must have a string type";
-                } else if (type_it->second.string() != "function" && type_it->second.string() != "custom") {
-                    return "Only client-executed function and custom tools are supported; hosted tool charges are not accounted for";
                 }
             }
 
@@ -288,10 +290,10 @@ namespace providers {
 
                         if (auto type_it = item.object().find("type"); type_it == item.object().end() || !type_it->second.is_string() || type_it->second.string() != "additional_tools") continue;
 
-                        if (auto tools_it = item.object().find("tools"); tools_it == item.object().end()) {
+                        if (auto tools_it = item.object().find("tools"); tools_it != item.object().end()) {
+                            if (auto error = validate_tools(tools_it->second)) return error;
+                        } else {
                             return "additional_tools input items must contain tools";
-                        } else if (auto error = validate_tools(tools_it->second)) {
-                            return error;
                         }
                     }
                 }

@@ -289,20 +289,22 @@ namespace providers {
             }
 
             auto& object = config.object();
-            if (auto api_key_it = object.find("api_key"); api_key_it == object.end() || !api_key_it->second.is_string() || api_key_it->second.string().empty()) {
-                throw std::invalid_argument("opencode-go requires a nonempty api_key and string plan");
-            } else {
+            if (auto api_key_it = object.find("api_key"); api_key_it != object.end() && api_key_it->second.is_string() && !api_key_it->second.string().empty()) {
                 api_key = std::move(api_key_it->second.string());
+            } else {
+                throw std::invalid_argument("opencode-go requires a nonempty api_key and string plan");
             }
 
-            if (auto plan_it = object.find("plan"); plan_it == object.end() || !plan_it->second.is_string()) {
-                throw std::invalid_argument("opencode-go requires a nonempty api_key and string plan");
-            } else if (plan_it->second.string() == "go") {
-                go_plan = GO_PLAN_GO;
-            } else if (plan_it->second.string() == "go-plus") {
-                go_plan = GO_PLAN_GO_PLUS;
+            if (auto plan_it = object.find("plan"); plan_it != object.end() && plan_it->second.is_string()) {
+                if (plan_it->second.string() == "go") {
+                    go_plan = GO_PLAN_GO;
+                } else if (plan_it->second.string() == "go-plus") {
+                    go_plan = GO_PLAN_GO_PLUS;
+                } else {
+                    throw std::invalid_argument("opencode-go plan must be go or go-plus");
+                }
             } else {
-                throw std::invalid_argument("opencode-go plan must be go or go-plus");
+                throw std::invalid_argument("opencode-go requires a nonempty api_key and string plan");
             }
         }
 

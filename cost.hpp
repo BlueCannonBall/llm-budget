@@ -49,9 +49,7 @@ namespace cost {
                 if (field_it->second.is_null() && field == "cache_write_tokens") return 0;
 
                 std::string_view defect;
-                if (!field_it->second.is_number()) {
-                    defect = "expected_number";
-                } else {
+                if (field_it->second.is_number()) {
                     double count = field_it->second.number();
                     if (!std::isfinite(count)) {
                         defect = "nonfinite_count";
@@ -64,6 +62,8 @@ namespace cost {
                     } else {
                         return (uint64_t) count;
                     }
+                } else {
+                    defect = "expected_number";
                 }
 
                 if (warning && warning->field.empty()) *warning = {path, defect};
