@@ -197,18 +197,18 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][0] == "https://api.deepseek.com/chat/completions"
             assert seen[-1][2]["model"] == "deepseek-flash" and seen[-1][2]["user_id"] == "alice"
 
-            assert request("opencode-go/deepseek-v4-flash", stream=True, user=1)[0] == 200
+            assert request("opencode-go/deepseek-v4.1-flash", stream=True, user=1)[0] == 200
             go = last_row()
-            assert go in (200010100, 400020200), go
+            assert go in (150007575, 300015150), go
             assert go < direct
             assert seen[-1][0] == "https://opencode.ai/zen/go/v1/chat/completions"
             assert seen[-1][1]["Authorization"] == "Bearer test-go"
             assert seen[-1][1]["User-Agent"] == "llm-budget/1.0"
             assert seen[-1][1]["x-opencode-session"] == "conversation-1"
-            assert seen[-1][2]["model"] == "deepseek-v4-flash"
+            assert seen[-1][2]["model"] == "deepseek-v4.1-flash"
 
             for options in (None, {}, {"include_usage": False, "other_option": "preserved"}):
-                assert request("opencode-go/deepseek-v4-flash", stream=True,
+                assert request("opencode-go/deepseek-v4.1-flash", stream=True,
                                body_fields={"stream_options": options})[0] == 200
                 last_row()
                 assert seen[-1][2]["stream_options"] == dict(options or {}, include_usage=True)
@@ -216,12 +216,12 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             for options in (False, "invalid", [], 1):
                 calls_before = len(seen)
                 rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
-                assert request("opencode-go/deepseek-v4-flash", stream=True,
+                assert request("opencode-go/deepseek-v4.1-flash", stream=True,
                                body_fields={"stream_options": options})[0] == 400
                 assert len(seen) == calls_before
                 assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
 
-            assert request("opencode-go/deepseek-v4-flash",
+            assert request("opencode-go/deepseek-v4.1-flash",
                            body_fields={"stream_options": {"include_usage": False}})[0] == 200
             last_row()
             assert seen[-1][2]["stream_options"] == {"include_usage": False}

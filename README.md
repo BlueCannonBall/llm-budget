@@ -99,7 +99,7 @@ Provider-qualified names pin routing without ambiguity:
 
 ```text
 deepseek/deepseek-flash
-opencode-go/deepseek-v4-flash
+opencode-go/deepseek-v4.1-flash
 opencode-go/minimax-m2.7
 opencode-go/gpt-5.6-luna
 openai/gpt-4.1-mini
