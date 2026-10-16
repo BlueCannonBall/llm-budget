@@ -126,7 +126,7 @@ def go_allowance(text):
     # Accept the known promotion label, not arbitrary prose or multiple prices.
     if text in ("Unlimited", "Unlimited limited time"):
         return 0
-    match = re.fullmatch(r"\$(\d+)(?: 2x · Limited time)?", text)
+    match = re.fullmatch(r"\$(\d+)(?: \d+x · Limited time)?", text)
     if not match:
         raise ValueError(f"unrecognized allowance: {text!r}")
     return int(match.group(1))

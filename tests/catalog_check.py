@@ -100,8 +100,16 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(differences), 2)
         self.assertTrue(all("catalog=80, published=160" in item for item in differences))
 
+    def test_four_times_promotion_reads_active_allowance(self):
+        html = go_html(go=60, plus=240)
+        html = html.replace("<td>$60</td>", '<td><del>$15</del> <strong>$60</strong><br/><small>4x · Limited time</small></td>')
+        html = html.replace("<td>$240</td>", '<td><del>$60</del> <strong>$240</strong><br/><small>4x · Limited time</small></td>')
+        catalog = checker.go_catalog(html)
+        self.assertEqual(catalog[("deepseek-v4.1-flash", "Off-Peak")]["go"], 60)
+        self.assertEqual(catalog[("deepseek-v4.1-flash", "Peak")]["go-plus"], 240)
+
     def test_ambiguous_or_unknown_allowances_fail_closed(self):
-        for allowance in ("$30 $60 2x · Limited time", "$60 TBD", "$60 3x · Limited time", "Unlimited TBD", "$60.50"):
+        for allowance in ("$30 $60 2x · Limited time", "$60 TBD", "$60 limited time", "Unlimited TBD", "$60.50"):
             with self.subTest(allowance=allowance), self.assertRaises(ValueError):
                 checker.go_catalog(go_html().replace("<td>$80</td>", f"<td>{allowance}</td>"))
 

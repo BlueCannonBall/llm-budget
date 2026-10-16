@@ -109,7 +109,7 @@ The proxy replaces the outbound `model` with the upstream model ID. Unqualified
 `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
 models require qualification. There is no automatic fallback to another provider.
 Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
-baseline checked October 14, 2026; Go allowances updated October 14, 2026:
+baseline checked October 16, 2026; Go allowances updated October 16, 2026:
 
 - **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
   `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
@@ -124,7 +124,8 @@ baseline checked October 14, 2026; Go allowances updated October 14, 2026:
   `opencode-go/claude-haiku-5-5` uses Messages upstream, with a whole-request
   price increase above 100,000 input tokens. `opencode-go/space-bunny` is paid;
   the obsolete `space-bunny-free` ID is not accepted.
-  `opencode-go/step-5-preview-free` is free with unlimited usage.
+  `opencode-go/step-5-preview` is priced at $1.00/$2.70 per million input/output tokens,
+  with a limited-time 4x usage allowance of $60 on Go and $240 on Go Plus.
   `opencode-go/cat-jam-free` is free with unlimited usage for a limited time.
 - **OpenAI:** 35 text/coding models, with endpoint support checked against each
   [model page](https://developers.openai.com/api/docs/models) and standard rates
