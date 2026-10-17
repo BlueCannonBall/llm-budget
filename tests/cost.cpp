@@ -296,8 +296,13 @@ int main() {
     check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, peak, 3563);
     check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, off_peak, 3563, plus_configuration);
     check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, peak, 7125, plus_configuration);
-    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, off_peak, 4750);
-    check_cost("opencode-go", "deepseek-v4-flash-vision-exp", {0, 35, 15, 0}, off_peak, 9500);
+    for (std::string_view retired_model : {
+             "deepseek-v4-flash",
+             "deepseek-v4-flash-vision-exp",
+         }) {
+        assert(!calculate_cost("opencode-go", retired_model, {0, 35, 15, 0}, off_peak));
+        assert(!providers::resolve(configuration, "opencode-go/" + std::string(retired_model)));
+    }
 
     // Cache writes use their own rate without also charging the input rate.
     check_cost("opencode-go", "minimax-m2.7", {100, 205, 1000, 5}, off_peak, 211313);
@@ -314,21 +319,21 @@ int main() {
     // Go uses UTC weekdays, independently of direct DeepSeek's China holidays.
     auto go_peak = sys_days {2026y / October / 1} + 1h;
     check_cost("deepseek", "deepseek-flash", {0, 35, 15, 0}, go_peak, 14250);
-    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, go_peak, 9500);
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, go_peak, 3563);
 
     for (auto time : std::initializer_list<sys_seconds> {peak - 1s, peak + 3h, peak + 9h, off_peak}) {
-        check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, time, 4750);
+        check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, time, 1782);
     }
 
     for (auto time : {peak, peak + 5h, sys_days {2027y / January / 4} + 1h}) {
-        check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, time, 9500);
+        check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, time, 3563);
     }
 
     auto saturday = sys_days {2026y / October / 3} + 1h;
-    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, saturday, 4750);
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, saturday, 1782);
 
     auto friday_late = sys_days {2026y / October / 2} + 23h;
-    check_cost("opencode-go", "deepseek-v4-flash", {0, 35, 15, 0}, friday_late, 4750);
+    check_cost("opencode-go", "deepseek-v4.1-flash", {0, 35, 15, 0}, friday_late, 1782);
 
     // Context thresholds count all input, not output, and select whole-request rates.
     check_cost("opencode-go", "qwen3.7-plus", {255999, 1, 10, 1}, off_peak, 1709410);

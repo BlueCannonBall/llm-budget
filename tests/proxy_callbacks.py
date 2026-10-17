@@ -150,7 +150,15 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                                     cwd=directory, text=True, capture_output=True, check=True)
             keys.append(result.stdout.split("API key: ")[1].strip())
         db = sqlite3.connect(directory / "llm-budget.db")
-        server = subprocess.Popen([str(binary)], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # Drain logs to a file so a full pipe cannot stall the server mid-test.
+        server_output = tempfile.TemporaryFile(mode="w+t", dir=directory)
+        server = subprocess.Popen(
+            [str(binary)],
+            cwd=directory,
+            stdout=server_output,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         try:
             for _ in range(100):
                 try:
@@ -362,7 +370,8 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
 
             assert request("opencode-go/deepseek-v4.1-flash", stream=True, user=1)[0] == 200
             go = last_row()
-            assert go in (150007575, 300015150), go
+            # $10 Go subscription / $80 Flash allowance, rounded up once.
+            assert go in (75003788, 150007575), go
             assert go < direct
             assert seen[-1][0] == "https://opencode.ai/zen/go/v1/chat/completions"
             assert seen[-1][1]["Authorization"] == "Bearer test-go"
@@ -657,7 +666,10 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                     failed_requests.append((row[0], service, model.split("/", 1)[1], protocol, failure))
         finally:
             server.terminate()
-            output, _ = server.communicate(timeout=5)
+            server.communicate(timeout=5)
+            server_output.seek(0)
+            output = server_output.read()
+            server_output.close()
             db.close()
 
         failures = [line for line in output.splitlines() if "Upstream request failed:" in line]
