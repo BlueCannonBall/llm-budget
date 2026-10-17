@@ -382,14 +382,19 @@ int main() {
     auto direct_qualified = providers::resolve(configuration, "deepseek/deepseek-v4-pro");
     auto go = providers::resolve(configuration, "opencode-go/deepseek-v4-pro");
     assert(direct && direct_qualified && go);
-    assert(direct->provider->definition().name == "deepseek" && direct_qualified->provider->definition().name == "deepseek");
-    assert(go->provider->definition().name == "opencode-go");
-    assert(direct->model->name == "deepseek-v4-pro" && direct_qualified->model->name == "deepseek-v4-pro");
-    assert(go->model->name == "deepseek-v4-pro");
-    assert(direct->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && direct->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
+    assert(direct.provider->definition().name == "deepseek");
+    assert(direct_qualified.provider->definition().name == "deepseek");
+    assert(go.provider->definition().name == "opencode-go");
+    assert(direct.model->name == "deepseek-v4-pro");
+    assert(direct_qualified.model->name == "deepseek-v4-pro");
+    assert(go.model->name == "deepseek-v4-pro");
+    assert(direct.model->supports(providers::PROTOCOL_CHAT_COMPLETIONS));
+    assert(direct.model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
 
     auto openai = providers::resolve(configuration, "openai/gpt-4.1-mini");
-    assert(openai && openai->model->supports(providers::PROTOCOL_CHAT_COMPLETIONS) && !openai->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
+    assert(openai);
+    assert(openai.model->supports(providers::PROTOCOL_CHAT_COMPLETIONS));
+    assert(!openai.model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES));
 
     assert(!providers::resolve(configuration, "glm-5.3"));
     assert(!providers::resolve(configuration, "gpt-4.1-mini"));
@@ -402,7 +407,8 @@ int main() {
     auto reordered = make_configuration();
     std::swap(reordered.front(), reordered.back());
     auto reordered_direct = providers::resolve(reordered, "deepseek-v4-pro");
-    assert(reordered_direct && reordered_direct->provider->definition().name == "deepseek");
+    assert(reordered_direct);
+    assert(reordered_direct.provider->definition().name == "deepseek");
     check_cost("deepseek", "deepseek-v4-pro", {0, 35, 15, 0}, off_peak, 52800, reordered);
     check_cost("opencode-go", "deepseek-v4-pro", {0, 35, 15, 0}, off_peak, 35200, reordered);
     check_cost("openai", "gpt-4.1-mini", {10, 25, 16, 0}, off_peak, 36600, reordered);

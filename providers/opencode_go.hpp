@@ -335,8 +335,11 @@ namespace providers {
             return std::nullopt;
         }
 
-        std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            if (auto error = Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
+        std::string_view prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
+            if (auto error = Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
+                !error.empty()) {
+                return error;
+            }
 
             if (auto user_agent_it = inbound_headers.find("User-Agent"); user_agent_it != inbound_headers.end() && !user_agent_it->second.empty()) {
                 outbound_headers["User-Agent"] = user_agent_it->second;
@@ -350,7 +353,7 @@ namespace providers {
                 }
             }
 
-            return std::nullopt;
+            return {};
         }
     };
 } // namespace providers

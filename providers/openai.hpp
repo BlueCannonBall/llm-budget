@@ -5,24 +5,6 @@
 namespace providers {
     class OpenAIProvider final : public Provider {
     protected:
-        static std::optional<std::string_view> validate_tools(const SJSON::JSValue& tools) {
-            if (!tools.is_array()) return "tools must be an array";
-
-            for (const auto& tool : tools.array()) {
-                if (!tool.is_object()) return "Each tool must be an object";
-
-                if (auto type_it = tool.object().find("type"); type_it != tool.object().end() && type_it->second.is_string()) {
-                    if (type_it->second.string() != "function" && type_it->second.string() != "custom") {
-                        return "Only client-executed function and custom tools are supported; hosted tool charges are not accounted for";
-                    }
-                } else {
-                    return "Each tool must have a string type";
-                }
-            }
-
-            return std::nullopt;
-        }
-
         inline static constexpr ProviderDefinition provider_definition {
             .name = "openai",
             .chat_completions_base_url = "https://api.openai.com/v1",
@@ -276,30 +258,6 @@ namespace providers {
 
         std::span<const Model> models() const override {
             return model_catalog;
-        }
-
-        std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            if (auto tools_it = body.find("tools"); tools_it != body.end()) {
-                if (auto error = validate_tools(tools_it->second)) return error;
-            }
-
-            if (protocol == PROTOCOL_RESPONSES) {
-                if (auto input_it = body.find("input"); input_it != body.end() && input_it->second.is_array()) {
-                    for (const auto& item : input_it->second.array()) {
-                        if (!item.is_object()) continue;
-
-                        if (auto type_it = item.object().find("type"); type_it == item.object().end() || !type_it->second.is_string() || type_it->second.string() != "additional_tools") continue;
-
-                        if (auto tools_it = item.object().find("tools"); tools_it != item.object().end()) {
-                            if (auto error = validate_tools(tools_it->second)) return error;
-                        } else {
-                            return "additional_tools input items must contain tools";
-                        }
-                    }
-                }
-            }
-
-            return Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
         }
     };
 } // namespace providers

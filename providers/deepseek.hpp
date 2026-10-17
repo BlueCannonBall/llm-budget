@@ -44,8 +44,11 @@ namespace providers {
             return model_catalog;
         }
 
-        std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
-            if (auto error = Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name)) return error;
+        std::string_view prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string& user_name) const override {
+            if (auto error = Provider::prepare_request(protocol, inbound_headers, outbound_headers, body, user_name);
+                !error.empty()) {
+                return error;
+            }
 
             if (protocol == PROTOCOL_CHAT_COMPLETIONS) {
                 body["user_id"] = user_name;
@@ -59,7 +62,7 @@ namespace providers {
                 metadata.object()["user_id"] = user_name;
             }
 
-            return std::nullopt;
+            return {};
         }
     };
 } // namespace providers

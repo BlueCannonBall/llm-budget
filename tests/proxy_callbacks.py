@@ -13,6 +13,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -191,6 +192,168 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
 
                 raise AssertionError(row)
 
+            def test_client_tools():
+                client_tools = [
+                    {
+                        "type": "function",
+                        "name": "local_function",
+                        "parameters": {"type": "object"},
+                    },
+                    {"type": "custom", "name": "local_custom"},
+                ]
+                image_input = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this image"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,local-test-image",
+                            },
+                        ],
+                    },
+                ]
+
+                # The shared policy rejects hosted/unknown tools before admission,
+                # for every provider and protocol, with both response transports.
+                for model in (
+                    "openai/gpt-6.1-sol",
+                    "opencode-go/gpt-5.6-luna",
+                    "deepseek/deepseek-v4-pro",
+                ):
+                    routes = ("/chat/completions", "/responses")
+                    if not model.startswith("openai/"):
+                        routes += ("/v1/messages",)
+
+                    for route in routes:
+                        blocked_fields = [
+                            {
+                                "tools": [
+                                    {"type": tool_type, "name": "local", "input_schema": {}},
+                                ],
+                            }
+                            for tool_type in (
+                                "web_search",
+                                "web_search_20250305",
+                                "web_fetch_20250910",
+                                "image_generation",
+                                "file_search",
+                                "code_interpreter",
+                                "computer_20250124",
+                                "bash_20250124",
+                                "mcp",
+                                "tool_search",
+                                "unknown_future_tool",
+                            )
+                        ]
+                        blocked_fields += [
+                            {"tools": value}
+                            for value in (None, {}, "invalid", [None], [{}], [{"type": 1}])
+                        ]
+                        blocked_fields += [
+                            {"web_search_options": value}
+                            for value in ({}, None, False)
+                        ]
+                        blocked_fields += [
+                            {"mcp_servers": value}
+                            for value in (
+                                [{"type": "url", "url": "https://example.invalid"}],
+                                None,
+                                {},
+                            )
+                        ]
+
+                        if route == "/responses":
+                            blocked_fields += [
+                                {
+                                    "input": [
+                                        {
+                                            "type": "additional_tools",
+                                            "tools": [{"type": "web_search"}],
+                                        },
+                                    ],
+                                },
+                                {"input": [{"type": "additional_tools"}]},
+                                {"input": [{"type": "additional_tools", "tools": None}]},
+                            ]
+                        elif route == "/v1/messages":
+                            blocked_fields += [
+                                {"tools": [tool]}
+                                for tool in (
+                                    {"name": "local"},
+                                    {"name": "local", "input_schema": None},
+                                    {"name": 1, "input_schema": {}},
+                                )
+                            ]
+
+                        for stream in (False, True):
+                            for fields in blocked_fields:
+                                calls_before = len(seen)
+                                rows_before = db.execute(
+                                    "SELECT COUNT(*) FROM requests"
+                                ).fetchone()[0]
+                                status, payload = request(
+                                    model,
+                                    route,
+                                    stream=stream,
+                                    body_fields=fields,
+                                )
+
+                                assert status == 400, (model, route, fields, status, payload)
+                                assert len(seen) == calls_before
+                                rows_after = db.execute(
+                                    "SELECT COUNT(*) FROM requests"
+                                ).fetchone()[0]
+                                assert rows_after == rows_before
+
+                            if route == "/v1/messages":
+                                tools = [
+                                    {"name": "local", "input_schema": {"type": "object"}},
+                                    {
+                                        "type": "custom",
+                                        "name": "explicit_local",
+                                        "input_schema": {},
+                                    },
+                                ]
+                            else:
+                                tools = client_tools
+
+                            fields = {"tools": tools, "mcp_servers": []}
+                            if route == "/responses":
+                                fields["input"] = image_input + [
+                                    {"type": "additional_tools", "tools": tools},
+                                ]
+                            else:
+                                fields["metadata"] = {
+                                    "usage_events": [
+                                        {"prompt_tokens": 1, "completion_tokens": 1},
+                                    ],
+                                }
+
+                            status, payload = request(
+                                model,
+                                route,
+                                stream=stream,
+                                body_fields=fields,
+                            )
+                            assert status == 200, (model, route, status, payload)
+                            assert last_row() is not None
+                            assert seen[-1][2]["tools"] == tools
+                            assert seen[-1][2]["mcp_servers"] == []
+                            if route == "/responses":
+                                assert seen[-1][2]["input"] == fields["input"]
+
+                db.execute("DELETE FROM requests")
+                db.commit()
+                print(
+                    "PASS: shared hosted-tool rejection and client-tool forwarding "
+                    "across providers, protocols and JSON/SSE"
+                )
+
+            test_client_tools()
+            if "--tools-only" in sys.argv:
+                raise SystemExit(0)
+
             assert request("deepseek/deepseek-flash")[0] == 200
             direct = last_row()
             assert direct in (600030300, 1200060600), direct
@@ -341,12 +504,6 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 assert seen[-1][2]["tools"] == client_tools
                 assert seen[-1][2]["input"] == fields["input"]
 
-            # Tool restrictions remain direct-OpenAI-only.
-            fields = {"tools": [{"type": "web_search"}]}
-            assert request("opencode-go/gpt-5.6-luna", "/responses", body_fields=fields)[0] == 200
-            assert last_row() == 828000
-            assert seen[-1][2]["service_tier"] == "default"
-            assert seen[-1][2]["tools"] == fields["tools"]
             assert request("opencode-go/claude-haiku-5-5", "/v1/messages",
                            body_fields={"cache_control": {"type": "ephemeral", "ttl": "1h"}})[0] == 200
             assert last_row() == 347750

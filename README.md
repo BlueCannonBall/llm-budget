@@ -162,7 +162,7 @@ curl http://127.0.0.1:8787/responses \
 ```
 
 Responses request fields are forwarded without protocol conversion, subject to
-the direct OpenAI accounting restrictions below. The provider-qualified model
+the shared accounting restrictions below. The provider-qualified model
 name is replaced. Both JSON and SSE responses are
 passed through. This endpoint implements response creation, not retrieval,
 deletion, cancellation, compaction, or WebSocket transport.
@@ -201,12 +201,16 @@ deletion, cancellation, compaction, or WebSocket transport.
   `service_tier` to `"default"` to avoid inheriting project-level Fast defaults.
   Caller-supplied tiers other than `"default"` (including `"auto"`, Fast/Priority,
   Ultrafast, and Flex) get `400` before admission or upstream dispatch.
-- Direct OpenAI permits only client-executed `function` and `custom` tools.
+- All providers permit only client-executed tools: `function` and `custom` tools
+  on Chat Completions and Responses; Messages tools with a `name`, `input_schema`,
+  and either no `type` or `type: "custom"`.
   Hosted tools, including image generation, web/file search, and hosted execution,
   get `400` because their additional charges are not accounted for. This also
   applies to tool definitions in Responses `additional_tools` input items.
-  Ordinary image inputs remain permitted. These restrictions do not apply to Go
-  or DeepSeek.
+  Chat Completions `web_search_options` and non-empty `mcp_servers` are also
+  rejected. Unknown tool types are rejected by default, including on Go and
+  DeepSeek. Ordinary image inputs remain permitted. Rejections happen before
+  budget admission or upstream dispatch.
 - Messages normalizes existing ephemeral `cache_control` markers to `ttl: "5m"`,
   including automatic top-level caching, system blocks, tool definitions, and
   message content (including nested tool-result content). It does not add cache
@@ -508,6 +512,7 @@ python3 tests/cli.py ./llm-budget
 python3 tests/usage_page.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_limits.py ./llm-budget  # port 8787 must be free
 python3 tests/proxy_callbacks.py          # GNU linker, g++; uses built obj/*.o
+python3 tests/proxy_callbacks.py --tools-only  # focused shared tool-policy checks
 python3 tests/usage_graph.py
 ```
 
@@ -519,6 +524,9 @@ It checks provider-qualified routing, upstream authentication, model rewriting,
 fragmented JSON/SSE usage (including Responses terminal snapshots), Go cost
 allocation, unsupported protocols, unavailable providers/pricing, valid zero
 multipliers, and admission limits using stored rather than nominal Go costs.
+The `--tools-only` option checks hosted-tool rejection before admission and
+client-tool forwarding across all providers and supported protocols, with JSON
+and SSE responses, without running the pricing/accounting scenarios.
 
 `proxy_limits.py` exercises all three proxy routes against the real local server,
 checking exhausted five-hour, weekly, and combined budgets, reset-based
@@ -528,10 +536,12 @@ checking exhausted five-hour, weekly, and combined budgets, reset-based
 exclusion, shorter history, missing costs, zero-spending days/users, and escaped
 SVG labels using a temporary SQLite database.
 
-The three C++ tests are standalone `main()` programs, built with the same include
+The four C++ tests are standalone `main()` programs, built with the same include
 paths as the server:
 
 ```sh
+g++ -std=c++23 -O2 -I. tests/providers.cpp SJSON/src/value.cpp Polyweb/string.cpp -o test_providers
+./test_providers
 g++ -std=c++23 -O2 -I. tests/cost.cpp SJSON/src/value.cpp Polyweb/string.cpp -o test_cost
 ./test_cost
 g++ -std=c++23 -O2 -pthread -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE \

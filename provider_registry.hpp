@@ -6,7 +6,6 @@
 #include "providers/opencode_go.hpp"
 #include <array>
 #include <memory>
-#include <optional>
 #include <stddef.h>
 #include <string>
 #include <string_view>
@@ -16,8 +15,12 @@ namespace providers {
     using ProviderSet = std::array<std::unique_ptr<Provider>, 3>;
 
     struct ResolvedModel {
-        const Provider* provider;
-        const Model* model;
+        const Provider* provider = nullptr;
+        const Model* model = nullptr;
+
+        explicit operator bool() const noexcept {
+            return provider && model;
+        }
     };
 
     namespace detail {
@@ -47,7 +50,7 @@ namespace providers {
         return nullptr;
     }
 
-    inline std::optional<ResolvedModel> resolve(const ProviderSet& configured, std::string_view name) {
+    inline ResolvedModel resolve(const ProviderSet& configured, std::string_view name) {
         std::string_view provider_name = "deepseek";
         std::string_view model_name = name;
         if (size_t slash = name.find('/'); slash != std::string_view::npos) {
@@ -56,10 +59,14 @@ namespace providers {
         }
 
         const Provider* provider = find_provider(configured, provider_name);
-        if (!provider) return std::nullopt;
+        if (!provider) {
+            return {};
+        }
 
         const Model* model = provider->find_model(model_name);
-        if (!model) return std::nullopt;
+        if (!model) {
+            return {};
+        }
 
         return ResolvedModel {provider, model};
     }

@@ -406,28 +406,31 @@ int main(int argc, char** argv) {
                     }
 
                     auto selection = providers::resolve(configured, model);
-                    if (!selection) return make_basic_resp(400, "Invalid model specified");
+                    if (!selection) {
+                        return make_basic_resp(400, "Invalid model specified");
+                    }
 
-                    if (!selection->model->supports(protocol)) {
+                    if (!selection.model->supports(protocol)) {
                         return make_basic_resp(400, protocol == providers::PROTOCOL_RESPONSES ? "Model does not support Responses" : "Model does not support Chat Completions");
                     }
 
-                    const auto* provider = selection->provider;
+                    const auto* provider = selection.provider;
                     if (!provider->configured()) {
                         return make_basic_resp(503, "Provider is not configured");
                     }
 
-                    req_body["model"] = selection->model->name;
+                    req_body["model"] = selection.model->name;
 
                     if (auto error = provider->prepare_request(protocol,
                             inbound_req.headers,
                             outbound_req_headers,
                             req_body,
-                            user->name)) {
-                        return make_basic_resp(400, std::string(*error));
+                            user->name);
+                        !error.empty()) {
+                        return make_basic_resp(400, std::string(error));
                     }
 
-                    auto multiplier = provider->multiplier(*selection->model);
+                    auto multiplier = provider->multiplier(*selection.model);
                     if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
 
                     auto now = std::chrono::system_clock::now();
@@ -437,7 +440,7 @@ int main(int argc, char** argv) {
                                                 outbound_req_headers = std::move(outbound_req_headers),
                                                 req_body = std::move(req_body),
                                                 definition = &provider->definition(),
-                                                selected_model = selection->model,
+                                                selected_model = selection.model,
                                                 multiplier = *multiplier,
                                                 now,
                                                 protocol,
@@ -599,28 +602,31 @@ int main(int argc, char** argv) {
                 }
 
                 auto selection = providers::resolve(configured, model);
-                if (!selection) return make_basic_resp(400, "Invalid model specified");
+                if (!selection) {
+                    return make_basic_resp(400, "Invalid model specified");
+                }
 
-                if (!selection->model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES)) {
+                if (!selection.model->supports(providers::PROTOCOL_ANTHROPIC_MESSAGES)) {
                     return make_basic_resp(400, "Model does not support Anthropic Messages");
                 }
 
-                const auto* provider = selection->provider;
+                const auto* provider = selection.provider;
                 if (!provider->configured()) {
                     return make_basic_resp(503, "Provider is not configured");
                 }
 
-                req_body["model"] = selection->model->name;
+                req_body["model"] = selection.model->name;
 
                 if (auto error = provider->prepare_request(providers::PROTOCOL_ANTHROPIC_MESSAGES,
                         inbound_req.headers,
                         outbound_req_headers,
                         req_body,
-                        user->name)) {
-                    return make_basic_resp(400, std::string(*error));
+                        user->name);
+                    !error.empty()) {
+                    return make_basic_resp(400, std::string(error));
                 }
 
-                auto multiplier = provider->multiplier(*selection->model);
+                auto multiplier = provider->multiplier(*selection.model);
                 if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
 
                 auto now = std::chrono::system_clock::now();
@@ -630,7 +636,7 @@ int main(int argc, char** argv) {
                                             outbound_req_headers = std::move(outbound_req_headers),
                                             req_body = std::move(req_body),
                                             definition = &provider->definition(),
-                                            selected_model = selection->model,
+                                            selected_model = selection.model,
                                             multiplier = *multiplier,
                                             now,
                                             channel = std::weak_ptr<Channel<Message>>(channel)]() {

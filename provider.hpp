@@ -13,6 +13,99 @@
 namespace providers {
     class Provider {
     protected:
+        static std::string_view validate_tools(Protocol protocol, const SJSON::JSValue& tools) {
+            if (!tools.is_array()) {
+                return "tools must be an array";
+            }
+
+            for (const auto& tool : tools.array()) {
+                if (!tool.is_object()) {
+                    return "Each tool must be an object";
+                }
+
+                if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {
+                    if (auto type_it = tool.object().find("type"); type_it != tool.object().end()) {
+                        if (!type_it->second.is_string()) {
+                            return "Tool type must be a string";
+                        }
+                        if (type_it->second.string() != "custom") {
+                            return "Only client-executed tools are supported; "
+                                   "hosted tool charges are not accounted for";
+                        }
+                    }
+
+                    if (auto name_it = tool.object().find("name");
+                        name_it == tool.object().end() || !name_it->second.is_string()) {
+                        return "Client-executed Messages tools must have a string name";
+                    }
+
+                    if (auto schema_it = tool.object().find("input_schema");
+                        schema_it == tool.object().end() || !schema_it->second.is_object()) {
+                        return "Client-executed Messages tools must have an input_schema object";
+                    }
+                } else {
+                    if (auto type_it = tool.object().find("type");
+                        type_it != tool.object().end() && type_it->second.is_string()) {
+                        if (type_it->second.string() != "function" &&
+                            type_it->second.string() != "custom") {
+                            return "Only client-executed function and custom tools are supported; "
+                                   "hosted tool charges are not accounted for";
+                        }
+                    } else {
+                        return "Each tool must have a string type";
+                    }
+                }
+            }
+
+            return {};
+        }
+
+        static std::string_view validate_request_tools(Protocol protocol, const SJSON::JSObject& body) {
+            if (auto tools_it = body.find("tools"); tools_it != body.end()) {
+                if (auto error = validate_tools(protocol, tools_it->second); !error.empty()) {
+                    return error;
+                }
+            }
+
+            if (body.contains("web_search_options")) {
+                return "Hosted web search is not supported; tool charges are not accounted for";
+            }
+
+            if (auto servers_it = body.find("mcp_servers"); servers_it != body.end()) {
+                if (!servers_it->second.is_array() || !servers_it->second.array().empty()) {
+                    return "Hosted MCP servers are not supported; tool charges are not accounted for";
+                }
+            }
+
+            if (protocol == PROTOCOL_RESPONSES) {
+                if (auto input_it = body.find("input");
+                    input_it != body.end() && input_it->second.is_array()) {
+                    for (const auto& item : input_it->second.array()) {
+                        if (!item.is_object()) {
+                            continue;
+                        }
+
+                        if (auto type_it = item.object().find("type");
+                            type_it == item.object().end() ||
+                            !type_it->second.is_string() ||
+                            type_it->second.string() != "additional_tools") {
+                            continue;
+                        }
+
+                        if (auto tools_it = item.object().find("tools"); tools_it != item.object().end()) {
+                            if (auto error = validate_tools(protocol, tools_it->second); !error.empty()) {
+                                return error;
+                            }
+                        } else {
+                            return "additional_tools input items must contain tools";
+                        }
+                    }
+                }
+            }
+
+            return {};
+        }
+
         static void normalize_cache_control(SJSON::JSObject& object) {
             if (auto cache_control_it = object.find("cache_control"); cache_control_it != object.end() && cache_control_it->second.is_object()) {
                 auto& cache_control = cache_control_it->second.object();
@@ -75,7 +168,12 @@ namespace providers {
             return cost::Multiplier {1, 1};
         }
 
-        virtual std::optional<std::string_view> prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string&) const {
+        // An empty view indicates success; otherwise the view contains an error message.
+        virtual std::string_view prepare_request(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers, SJSON::JSObject& body, const std::string&) const {
+            if (auto error = validate_request_tools(protocol, body); !error.empty()) {
+                return error;
+            }
+
             if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
                 if (auto service_tier_it = body.find("service_tier"); service_tier_it != body.end()) {
                     if (!service_tier_it->second.is_string() || service_tier_it->second.string() != "default") {
@@ -132,7 +230,7 @@ namespace providers {
                 }
             }
 
-            return std::nullopt;
+            return {};
         }
     };
 } // namespace providers

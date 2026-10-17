@@ -4,6 +4,8 @@
 - When testing the proxy, always send requests to `http://127.0.0.1:8787` using local test user keys, never upstream endpoints directly.
 
 # C++ Style
+- Keep code readable: use braced, multiline conditional bodies and wrap long conditions and structured test data instead of packing them onto single lines.
+- Keep short function declarations on one line; do not split a two-argument declaration merely to wrap it.
 - Spell the unsigned integer type `unsigned int`, not bare `unsigned`.
 - Declare map lookup iterators in `if` initializers and name them descriptively with an `_it` suffix.
 - Prefer C-style casts over functional casts or C++ named casts.
