@@ -106,7 +106,17 @@ namespace providers {
             return {};
         }
 
-        static void normalize_cache_control(SJSON::JSObject& object) {
+        static std::string_view normalize_service_tier(SJSON::JSObject& body) {
+            if (auto service_tier_it = body.find("service_tier"); service_tier_it != body.end()) {
+                if (!service_tier_it->second.is_string() || service_tier_it->second.string() != "default") {
+                    return "Only standard service_tier=\"default\" is supported; other service-tier prices are not accounted for";
+                }
+            }
+            body["service_tier"] = "default";
+            return {};
+        }
+
+        static void normalize_messages_cache_control(SJSON::JSObject& object) {
             if (auto cache_control_it = object.find("cache_control"); cache_control_it != object.end() && cache_control_it->second.is_object()) {
                 auto& cache_control = cache_control_it->second.object();
                 if (auto type_it = cache_control.find("type"); type_it != cache_control.end() && type_it->second.is_string() && type_it->second.string() == "ephemeral") {
@@ -115,17 +125,116 @@ namespace providers {
             }
         }
 
-        static void normalize_content_cache_controls(SJSON::JSValue& content) {
-            if (!content.is_array()) return;
+        static void normalize_messages_content_cache_controls(SJSON::JSValue& content) {
+            if (!content.is_array()) {
+                return;
+            }
 
             for (auto& block : content.array()) {
-                if (!block.is_object()) continue;
+                if (!block.is_object()) {
+                    continue;
+                }
 
-                normalize_cache_control(block.object());
+                normalize_messages_cache_control(block.object());
                 if (auto content_it = block.object().find("content"); content_it != block.object().end()) {
-                    normalize_content_cache_controls(content_it->second);
+                    normalize_messages_content_cache_controls(content_it->second);
                 }
             }
+        }
+
+        static void normalize_messages_cache_controls(SJSON::JSObject& body) {
+            normalize_messages_cache_control(body);
+            for (const auto* field : {"system", "tools"}) {
+                if (auto field_it = body.find(field); field_it != body.end()) {
+                    normalize_messages_content_cache_controls(field_it->second);
+                }
+            }
+            if (auto messages_it = body.find("messages"); messages_it != body.end() && messages_it->second.is_array()) {
+                for (auto& message : messages_it->second.array()) {
+                    if (!message.is_object()) {
+                        continue;
+                    }
+
+                    if (auto content_it = message.object().find("content"); content_it != message.object().end()) {
+                        normalize_messages_content_cache_controls(content_it->second);
+                    }
+                }
+            }
+        }
+
+        static void normalize_responses_cache_controls(SJSON::JSObject& body) {
+            // Match the catalog's 30-minute cache-write rates. Do not add
+            // caching options or breakpoints where the caller omitted them.
+            if (auto options_it = body.find("prompt_cache_options");
+                options_it != body.end() && options_it->second.is_object()) {
+                options_it->second.object()["ttl"] = "30m";
+            }
+            if (auto input_it = body.find("input");
+                input_it != body.end() && input_it->second.is_array()) {
+                for (auto& item : input_it->second.array()) {
+                    if (!item.is_object()) {
+                        continue;
+                    }
+
+                    auto& message = item.object();
+                    if (auto role_it = message.find("role");
+                        role_it == message.end() || !role_it->second.is_string()) {
+                        continue;
+                    }
+                    if (auto content_it = message.find("content");
+                        content_it != message.end() && content_it->second.is_array()) {
+                        for (auto& block : content_it->second.array()) {
+                            if (!block.is_object()) {
+                                continue;
+                            }
+
+                            if (auto breakpoint_it = block.object().find("prompt_cache_breakpoint");
+                                breakpoint_it != block.object().end() && breakpoint_it->second.is_object()) {
+                                breakpoint_it->second.object()["ttl"] = "30m";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        static std::string_view validate_responses_background(const SJSON::JSObject& body) {
+            if (auto background_it = body.find("background"); background_it != body.end()) {
+                if (!background_it->second.is_boolean()) {
+                    return "background must be a boolean";
+                }
+                if (background_it->second.boolean()) {
+                    return "Background Responses are not supported; later usage is not accounted for";
+                }
+            }
+            return {};
+        }
+
+        void prepare_headers(Protocol protocol, const pw::Headers& inbound_headers, pw::Headers& outbound_headers) const {
+            if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
+                outbound_headers["Authorization"] = "Bearer " + api_key;
+            } else if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {
+                outbound_headers["x-api-key"] = api_key;
+                outbound_headers["anthropic-version"] = "2023-06-01";
+                for (const auto* header : {"anthropic-version", "anthropic-beta"}) {
+                    if (auto header_it = inbound_headers.find(header); header_it != inbound_headers.end()) {
+                        outbound_headers[header] = header_it->second;
+                    }
+                }
+            }
+        }
+
+        static std::string_view normalize_chat_stream_options(SJSON::JSObject& body) {
+            if (auto stream_it = body.find("stream"); stream_it != body.end() && stream_it->second.is_boolean() && stream_it->second.boolean()) {
+                auto& options = body["stream_options"];
+                if (options.is_null()) {
+                    options = SJSON::JSObject {};
+                } else if (!options.is_object()) {
+                    return "stream_options must be an object";
+                }
+                options.object()["include_usage"] = true;
+            }
+            return {};
         }
 
         const ProviderDefinition* provider;
@@ -135,7 +244,9 @@ namespace providers {
             provider(&provider) {}
 
         static std::string read_api_key(SJSON::JSValue&& config) {
-            if (config.is_string()) return std::move(config.string());
+            if (config.is_string()) {
+                return std::move(config.string());
+            }
 
             return {};
         }
@@ -156,14 +267,18 @@ namespace providers {
 
         const Model* find_model(std::string_view name) const {
             for (const auto& model : models()) {
-                if (model.name == name) return &model;
+                if (model.name == name) {
+                    return &model;
+                }
             }
 
             return nullptr;
         }
 
         virtual std::optional<cost::Multiplier> multiplier(const Model&) const {
-            if (!configured()) return std::nullopt;
+            if (!configured()) {
+                return std::nullopt;
+            }
 
             return cost::Multiplier {1, 1};
         }
@@ -175,59 +290,30 @@ namespace providers {
             }
 
             if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
-                if (auto service_tier_it = body.find("service_tier"); service_tier_it != body.end()) {
-                    if (!service_tier_it->second.is_string() || service_tier_it->second.string() != "default") {
-                        return "Only standard service_tier=\"default\" is supported; other service-tier prices are not accounted for";
-                    }
-                }
-                body["service_tier"] = "default";
-            }
-
-            if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {
-                normalize_cache_control(body);
-                for (const auto* field : {"system", "tools"}) {
-                    if (auto field_it = body.find(field); field_it != body.end()) normalize_content_cache_controls(field_it->second);
-                }
-                if (auto messages_it = body.find("messages"); messages_it != body.end() && messages_it->second.is_array()) {
-                    for (auto& message : messages_it->second.array()) {
-                        if (!message.is_object()) continue;
-
-                        if (auto content_it = message.object().find("content"); content_it != message.object().end()) {
-                            normalize_content_cache_controls(content_it->second);
-                        }
-                    }
+                if (auto error = normalize_service_tier(body); !error.empty()) {
+                    return error;
                 }
             }
 
-            if (protocol == PROTOCOL_RESPONSES) {
-                if (auto background_it = body.find("background"); background_it != body.end()) {
-                    if (!background_it->second.is_boolean()) return "background must be a boolean";
-                    if (background_it->second.boolean()) return "Background Responses are not supported; later usage is not accounted for";
+            switch (protocol) {
+            case PROTOCOL_ANTHROPIC_MESSAGES:
+                normalize_messages_cache_controls(body);
+                break;
+
+            case PROTOCOL_RESPONSES:
+                normalize_responses_cache_controls(body);
+                if (auto error = validate_responses_background(body); !error.empty()) {
+                    return error;
                 }
+                break;
+
+            case PROTOCOL_CHAT_COMPLETIONS:
+                break;
             }
 
-            if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
-                outbound_headers["Authorization"] = "Bearer " + api_key;
-            } else if (protocol == PROTOCOL_ANTHROPIC_MESSAGES) {
-                outbound_headers["x-api-key"] = api_key;
-                outbound_headers["anthropic-version"] = "2023-06-01";
-                for (const auto* header : {"anthropic-version", "anthropic-beta"}) {
-                    if (auto header_it = inbound_headers.find(header); header_it != inbound_headers.end()) {
-                        outbound_headers[header] = header_it->second;
-                    }
-                }
-            }
-
+            prepare_headers(protocol, inbound_headers, outbound_headers);
             if (protocol == PROTOCOL_CHAT_COMPLETIONS) {
-                if (auto stream_it = body.find("stream"); stream_it != body.end() && stream_it->second.is_boolean() && stream_it->second.boolean()) {
-                    auto& options = body["stream_options"];
-                    if (options.is_null()) {
-                        options = SJSON::JSObject {};
-                    } else if (!options.is_object()) {
-                        return "stream_options must be an object";
-                    }
-                    options.object()["include_usage"] = true;
-                }
+                return normalize_chat_stream_options(body);
             }
 
             return {};

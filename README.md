@@ -214,7 +214,12 @@ deletion, cancellation, compaction, or WebSocket transport.
 - Messages normalizes existing ephemeral `cache_control` markers to `ttl: "5m"`,
   including automatic top-level caching, system blocks, tool definitions, and
   message content (including nested tool-result content). It does not add cache
-  markers, modify function arguments, or change OpenAI cache retention settings.
+  markers or modify function arguments.
+- Responses normalizes existing `prompt_cache_options` and message content-block
+  `prompt_cache_breakpoint` objects to `ttl: "30m"` for every provider, matching
+  the catalog's cache-write rates. It preserves caching modes and other options,
+  does not add caching options or breakpoints, and leaves older models'
+  `prompt_cache_retention` unchanged. Caller-requested 12-hour retention is overridden.
 - Responses rejects `background: true` with `400` for every provider before
   admission or upstream dispatch: later usage cannot be captured by this proxy.
   Omitted or false `background` is permitted; non-boolean values get `400`.
