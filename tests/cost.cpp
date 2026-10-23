@@ -305,8 +305,7 @@ int main() {
     }
 
     // Cache writes use their own rate without also charging the input rate.
-    check_cost("opencode-go", "minimax-m2.7", {100, 205, 1000, 5}, off_peak, 211313);
-    check_cost("opencode-go", "minimax-m2.7", {0, 10, 0, 10}, off_peak, 625);
+    check_cost("opencode-go", "minimax-m3", {100, 205, 1000, 5}, off_peak, 211250);
     check_cost("opencode-go", "minimax-m3", {0, 10, 0, 10}, off_peak, 500);
 
     // Fractional nanodollar rates survive until the final subscription calculation.
@@ -353,10 +352,14 @@ int main() {
     check_cost("opencode-go", "claude-haiku-5-5", {99999, 1, 10, 1}, off_peak, 670077, plus_configuration);
     check_cost("opencode-go", "claude-haiku-5-5", {99999, 2, 10, 2}, off_peak, 3350800, plus_configuration);
 
-    // Space Bunny is now paid, with $30/$120 allowances; do not route the retired free ID.
-    check_cost("opencode-go", "space-bunny", {100, 205, 1000, 5}, off_peak, 211250);
-    check_cost("opencode-go", "space-bunny", {100, 205, 1000, 5}, off_peak, 211250, plus_configuration);
-    assert(!providers::resolve(configuration, "opencode-go/space-bunny-free"));
+    // Free models cost zero; new paid models use each plan's allowance.
+    check_cost("opencode-go", "beam-free", {100, 205, 1000, 5}, off_peak, 0);
+    check_cost("opencode-go", "minimax-m3.1-flash", {100, 205, 1000, 5}, off_peak, 316125);
+    check_cost("opencode-go", "minimax-m3.1-flash", {100, 205, 1000, 5}, off_peak, 316125, plus_configuration);
+    check_cost("opencode-go", "kimi-k3.1-pro", {100, 205, 1000, 5}, off_peak, 6953334);
+    check_cost("opencode-go", "kimi-k3.1-pro", {100, 205, 1000, 5}, off_peak, 6953334, plus_configuration);
+    assert(!providers::resolve(configuration, "opencode-go/minimax-m3.1-flash-free"));
+    assert(!providers::resolve(configuration, "opencode-go/space-bunny"));
     check_cost("opencode-go", "longcat-2.5-preview-free", {maximum, 0, maximum, 0}, peak, 0);
 
     check_cost("opencode-go", "glm-5.3", {0, 0, 0, 0}, peak, 0);

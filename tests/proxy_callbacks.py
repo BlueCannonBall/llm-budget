@@ -402,10 +402,10 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             flat = last_row()
             assert flat == 83338834, flat
 
-            assert request("opencode-go/minimax-m2.7", "/v1/messages", stream=True)[0] == 200
+            assert request("opencode-go/minimax-m3", "/v1/messages", stream=True)[0] == 200
             messages = last_row()
             # Input, reads, writes and final cumulative output; no delta double counting.
-            assert messages == 211313, messages
+            assert messages == 211250, messages
             assert seen[-1][0] == "https://opencode.ai/zen/go/v1/messages"
             assert seen[-1][1]["x-api-key"] == "test-go"
             assert "Authorization" not in seen[-1][1]
@@ -438,9 +438,10 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                                metadata={"message_usage": usage})[0] == 200
                 assert last_row() == expected
 
-            assert request("opencode-go/space-bunny")[0] == 200
-            assert last_row() == 200011000
+            assert request("opencode-go/beam-free")[0] == 200
+            assert last_row() == 0
             calls_before_retired_model = len(seen)
+            assert request("opencode-go/space-bunny")[0] == 400
             assert request("opencode-go/space-bunny-free")[0] == 400
             assert len(seen) == calls_before_retired_model
 
@@ -572,7 +573,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert seen[-1][2]["user"] == "alice"
 
             # Go permits non-native routes; usage still uses the selected model's rates.
-            assert request("opencode-go/minimax-m2.7")[0] == 200
+            assert request("opencode-go/minimax-m3")[0] == 200
             assert last_row() == 200011000
             assert request("opencode-go/gpt-5.6-luna")[0] == 200
             assert last_row() == 800028000
@@ -649,7 +650,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             for route, model, protocol, service in (
                     ("/chat/completions", "openai/gpt-4.1-mini", "chat_completions", "openai"),
                     ("/responses", "openai/gpt-4.1-mini", "responses", "openai"),
-                    ("/v1/messages", "opencode-go/minimax-m2.7", "anthropic_messages", "opencode-go")):
+                    ("/v1/messages", "opencode-go/minimax-m3", "anthropic_messages", "opencode-go")):
                 for failure in ("headers", "body"):
                     status, payload = request(model, route, stream=True,
                                               metadata={"transport_failure": failure})

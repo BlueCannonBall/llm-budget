@@ -15,7 +15,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked October 16, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked October 23, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES;
@@ -40,6 +40,12 @@ namespace providers {
             },
 
             {
+                .name = "kimi-k3.1-pro",
+                .protocols = permitted_protocols,
+                .rates = {.input = 2'000'000, .cached_read = 200'000, .output = 10'000'000, .cached_write = 2'000'000},
+            },
+
+            {
                 .name = "kimi-k3",
                 .protocols = permitted_protocols,
                 .rates = {.input = 3'000'000, .cached_read = 300'000, .output = 15'000'000, .cached_write = 3'000'000},
@@ -49,12 +55,6 @@ namespace providers {
                 .name = "kimi-k2.7-code",
                 .protocols = permitted_protocols,
                 .rates = {.input = 950'000, .cached_read = 190'000, .output = 4'000'000, .cached_write = 950'000},
-            },
-
-            {
-                .name = "kimi-k2.6",
-                .protocols = permitted_protocols,
-                .rates = {.input = 950'000, .cached_read = 160'000, .output = 4'000'000, .cached_write = 950'000},
             },
 
             {
@@ -76,9 +76,15 @@ namespace providers {
             },
 
             {
-                .name = "cat-jam-free",
+                .name = "beam-free",
                 .protocols = permitted_protocols,
                 .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
+            },
+
+            {
+                .name = "minimax-m3.1-flash",
+                .protocols = permitted_protocols,
+                .rates = {.input = 150'000, .cached_read = 15'000, .output = 600'000, .cached_write = 150'000},
             },
 
             {
@@ -109,12 +115,6 @@ namespace providers {
                 .name = "minimax-m3",
                 .protocols = permitted_protocols,
                 .rates = {.input = 300'000, .cached_read = 60'000, .output = 1'200'000, .cached_write = 300'000},
-            },
-
-            {
-                .name = "minimax-m2.7",
-                .protocols = permitted_protocols,
-                .rates = {.input = 300'000, .cached_read = 60'000, .output = 1'200'000, .cached_write = 375'000},
             },
 
             {
@@ -182,21 +182,7 @@ namespace providers {
             },
 
             {
-                .name = "space-bunny",
-                .protocols = permitted_protocols,
-                .rates = {.input = 150'000, .cached_read = 30'000, .output = 600'000, .cached_write = 150'000},
-            },
-
-            {
                 .name = "grok-4.7",
-                .protocols = permitted_protocols,
-                .rates = {.input = 2'000'000, .cached_read = 500'000, .output = 6'000'000, .cached_write = 2'000'000},
-                .input_token_threshold = 200'000,
-                .above_threshold_rates = {.input = 4'000'000, .cached_read = 1'000'000, .output = 12'000'000, .cached_write = 4'000'000},
-            },
-
-            {
-                .name = "grok-4.6",
                 .protocols = permitted_protocols,
                 .rates = {.input = 2'000'000, .cached_read = 500'000, .output = 6'000'000, .cached_write = 2'000'000},
                 .input_token_threshold = 200'000,
@@ -245,19 +231,19 @@ namespace providers {
             {.model = "glm-5.3-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "glm-5.3", .go_monthly_usd = 15, .go_plus_monthly_usd = 120},
             {.model = "glm-5.2", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
+            {.model = "kimi-k3.1-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "kimi-k3", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "kimi-k2.7-code", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
-            {.model = "kimi-k2.6", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "longcat-2.0", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "longcat-2.5-preview-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
-            {.model = "step-5-preview", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
-            {.model = "cat-jam-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
+            {.model = "step-5-preview", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
+            {.model = "beam-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
+            {.model = "minimax-m3.1-flash", .go_monthly_usd = 20, .go_plus_monthly_usd = 80},
             {.model = "mimo-v2.6-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "mimo-v2.6-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "mimo-v2.5", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "mimo-v2.5-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "minimax-m3", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
-            {.model = "minimax-m2.7", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "muse-spark-1.3-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "muse-spark-1.2-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "qwen3.8-max", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
@@ -268,9 +254,7 @@ namespace providers {
             {.model = "gemini-4-argon-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "hy4-preview", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "hy3", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
-            {.model = "space-bunny", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "grok-4.7", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
-            {.model = "grok-4.6", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "claude-haiku-5-5", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "gpt-6-luna", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "gpt-5.6-luna", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
