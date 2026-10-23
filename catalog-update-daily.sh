@@ -19,6 +19,8 @@ runbook=$repo/CATALOG_UPDATE.md
 state_dir=$HOME/.local/state/llm-budget
 log=$state_dir/catalog-update.log
 lock=$state_dir/catalog-update.lock
+result_file=$state_dir/catalog-update-result
+pending_deploy=$state_dir/catalog-deploy-pending
 opencode_bin=${OPENCODE_BIN:-opencode}
 max_log_bytes=$((5 * 1024 * 1024))
 
@@ -40,10 +42,29 @@ run_agent() {
     check_output=$(python3 "$repo/catalog-check.py" 2>&1)
     check_status=$?
     printf '%s\n' "$check_output"
+    # A successful agent process is not proof that maintenance completed.
+    printf 'blocked\n' >"$result_file" || return 1
+    if [ -f "$pending_deploy" ]; then
+        deployment_status="pending; retry deployment even if catalogs are unchanged"
+    else
+        deployment_status="no recorded pending deployment"
+    fi
     # A parser failure must not prevent the agent from inspecting the sources.
     # Include diagnostics in its prompt; the agent may repair the checker.
     timeout 3600 "$opencode_bin" run --auto --model openai/gpt-6-luna \
         "$(cat "$runbook")
+
+## Scheduler completion contract
+
+Result file: $result_file
+Pending deployment file: $pending_deploy
+Deployment status: $deployment_status
+The result file starts as blocked. Write exactly complete to it only after all
+required work succeeds, including any pending deployment. On a blocked run leave
+it blocked. After pushing and BEFORE any remote command, write the pushed commit
+ID to the pending deployment file. Keep that file on deployment failure; remove
+it only after successful deployment verification. A server outage must not delay
+the local verification, commit, or push. Never claim complete for a blocked run.
 
 ## Scheduler pre-check result
 
@@ -68,6 +89,10 @@ must not block deployment of verified changes. Build and test requirements remai
     check_status=$?
     if [ "$check_status" -ne 0 ]; then
         printf 'WARNING: final catalog check exited %s; see agent findings and verification evidence above\n' "$check_status"
+    fi
+    if [ "$(cat "$result_file" 2>/dev/null)" != complete ] || [ -f "$pending_deploy" ]; then
+        printf 'ERROR: maintenance incomplete or deployment pending; see agent findings above\n'
+        return 1
     fi
     return 0
 }

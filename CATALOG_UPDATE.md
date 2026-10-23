@@ -29,8 +29,8 @@ Catalogs and prose to compare against:
 - `providers/deepseek.hpp` — `DeepSeekProvider::model_catalog`
 - `providers/openai.hpp` — `OpenAIProvider::model_catalog`
 - `providers/opencode_go.hpp` — `OpenCodeGoProvider::model_catalog` and `go_allowances`
-- `README.md` — the provider bullets, the model counts ("31 documented models",
-  "35 text/coding models"), and the OpenAI family table
+- `README.md` — the provider bullets, the documented model counts, and the
+  OpenAI family table
 
 Rate fields are integer picodollars per token: `150'000` means
 $0.15 per million tokens. `input_token_threshold` plus `above_threshold_rates`
@@ -99,8 +99,11 @@ whether each matches the catalog.
 ## Step 3 — Nothing changed
 
 If every value matches and no checker repair was needed, print your findings and
-**stop**. Do not commit, push,
-deploy, or bump the `Checked <date>` comments. (The dates only move when a rate
+do not commit, push, or bump the `Checked <date>` comments. If the scheduler's
+pending deployment file exists, retry Step 4's deployment using the current
+verified, pushed `main`, even though no catalog changes are needed. Otherwise
+write `complete` to the scheduler's result file and **stop**.
+(The dates only move when a rate
 or model actually changes, so that a quiet day produces no commit.)
 
 ## Step 4 — Something changed
@@ -126,10 +129,24 @@ or model actually changes, so that a quiet day produces no commit.)
    existing style, for example:
    `git add providers/opencode_go.hpp README.md && git commit -m 'Raise Grok 4.7 output rate in the Go catalog'`
 7. `git push origin main`.
-8. Deploy by following `DEPLOY.md` exactly. It rebuilds and tests on the remote
+8. Write the pushed commit ID (`git rev-parse HEAD`) to the scheduler's pending
+   deployment file **before running any remote command**. Never check server
+   availability or remote deployment preconditions before committing and pushing:
+   an unavailable server must not leave verified changes uncommitted.
+9. Deploy by following `DEPLOY.md` exactly. It rebuilds and tests on the remote
    host before restarting the server, and verifies TLS without a paid provider
    request. Stop and report if the remote checkout is dirty or verification
    fails; never reset the remote checkout.
+   Bound every remote command: use `timeout 30s ssh -o BatchMode=yes
+   -o ConnectTimeout=10 -o ConnectionAttempts=1` for prechecks, or `timeout 900s
+   ssh` with the same options for build/test/restart commands. A timeout is a
+   deployment failure, not success.
+   Keep the pending deployment file on any failure and report **pushed, not
+   deployed**. A later daily run must retry it, even on a no-change day. Deploy
+   the current verified, pushed `main`, not an older recorded commit if newer
+   changes have since been pushed. Only after successful deployment verification,
+   remove the pending deployment file and write `complete` to the scheduler's
+   result file. Leave the result `blocked` whenever any required work is unfinished.
 
 ## Step 5 — Report
 

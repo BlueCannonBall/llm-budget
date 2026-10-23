@@ -204,7 +204,10 @@ class CatalogTests(unittest.TestCase):
             "from pathlib import Path\nimport sys\np=Path(__file__).with_name('calls')\n"
             f"status={post} if p.exists() else {pre}\np.touch()\nsys.exit(status)\n")
         stub = self.repo / "stub"
-        stub.write_text(f"#!/bin/sh\ntouch '{self.repo}/agent-ran'\nexit {agent}\n")
+        stub.write_text(
+            f"#!/bin/sh\ntouch '{self.repo}/agent-ran'\n"
+            f"printf 'complete\\n' > '{self.repo}/.local/state/llm-budget/catalog-update-result'\n"
+            f"exit {agent}\n")
         stub.chmod(0o700)
         result = subprocess.run(["bash", str(script)], env={"OPENCODE_BIN": str(stub)}, capture_output=True)
         return result.returncode, (self.repo / ".local/state/llm-budget/catalog-update.log").read_text()
