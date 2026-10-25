@@ -67,6 +67,55 @@ int main() {
             error = selection.provider->prepare_request(
                 protocol, inbound_headers, outbound_headers, body, "alice");
             assert(!error.empty());
+
+            SJSON::JSObject namespace_tool {
+                {"type", "namespace"},
+                {"name", "local_group"},
+                {"tools", SJSON::JSArray {
+                    SJSON::JSObject {
+                        {"type", "function"},
+                        {"name", "nested_function"},
+                        {"parameters", SJSON::JSObject {{"type", "object"}}},
+                    },
+                    SJSON::JSObject {{"type", "custom"}, {"name", "nested_custom"}},
+                }},
+            };
+            body["tools"] = SJSON::JSArray {namespace_tool};
+            error = selection.provider->prepare_request(
+                protocol, inbound_headers, outbound_headers, body, "alice");
+            if (protocol == providers::PROTOCOL_ANTHROPIC_MESSAGES) {
+                assert(!error.empty());
+            } else {
+                assert(error.empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {
+                        {"type", "namespace"},
+                        {"name", "hosted_group"},
+                        {"tools", SJSON::JSArray {SJSON::JSObject {{"type", "web_search"}}}},
+                    },
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {{"type", "namespace"}, {"name", "missing_tools"}},
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                SJSON::JSObject nested_tool {{"type", "function"}, {"name", "leaf"}};
+                for (unsigned int depth = 0; depth < 32; ++depth) {
+                    nested_tool = SJSON::JSObject {
+                        {"type", "namespace"},
+                        {"name", "level"},
+                        {"tools", SJSON::JSArray {nested_tool}},
+                    };
+                }
+                body["tools"] = SJSON::JSArray {nested_tool};
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+            }
         }
     }
 

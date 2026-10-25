@@ -13,6 +13,48 @@
 namespace providers {
     class Provider {
     protected:
+        // Namespaces only group client-executed tools, so they carry no hosted charges.
+        // Bounding the nesting depth keeps hostile input from recursing without limit.
+        static constexpr unsigned int max_tool_namespace_depth = 4;
+
+        static std::string_view validate_openai_tool(const SJSON::JSValue& tool, unsigned int namespace_depth) {
+            if (!tool.is_object()) {
+                return "Each tool must be an object";
+            }
+
+            auto type_it = tool.object().find("type");
+            if (type_it == tool.object().end() || !type_it->second.is_string()) {
+                return "Each tool must have a string type";
+            }
+
+            const std::string_view type = type_it->second.string();
+            if (type == "function" || type == "custom") {
+                return {};
+            }
+
+            if (type != "namespace") {
+                return "Only client-executed function, custom, and namespace tools are supported; "
+                       "hosted tool charges are not accounted for";
+            }
+
+            if (namespace_depth >= max_tool_namespace_depth) {
+                return "Tool namespaces are nested too deeply";
+            }
+
+            auto nested_tools_it = tool.object().find("tools");
+            if (nested_tools_it == tool.object().end() || !nested_tools_it->second.is_array()) {
+                return "Namespace tools must contain a tools array";
+            }
+
+            for (const auto& nested_tool : nested_tools_it->second.array()) {
+                if (auto error = validate_openai_tool(nested_tool, namespace_depth + 1); !error.empty()) {
+                    return error;
+                }
+            }
+
+            return {};
+        }
+
         static std::string_view validate_tools(Protocol protocol, const SJSON::JSValue& tools) {
             if (!tools.is_array()) {
                 return "tools must be an array";
@@ -44,15 +86,8 @@ namespace providers {
                         return "Client-executed Messages tools must have an input_schema object";
                     }
                 } else {
-                    if (auto type_it = tool.object().find("type");
-                        type_it != tool.object().end() && type_it->second.is_string()) {
-                        if (type_it->second.string() != "function" &&
-                            type_it->second.string() != "custom") {
-                            return "Only client-executed function and custom tools are supported; "
-                                   "hosted tool charges are not accounted for";
-                        }
-                    } else {
-                        return "Each tool must have a string type";
+                    if (auto error = validate_openai_tool(tool, 0); !error.empty()) {
+                        return error;
                     }
                 }
             }

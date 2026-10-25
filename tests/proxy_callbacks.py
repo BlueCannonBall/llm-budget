@@ -208,6 +208,18 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                         "parameters": {"type": "object"},
                     },
                     {"type": "custom", "name": "local_custom"},
+                    {
+                        "type": "namespace",
+                        "name": "local_group",
+                        "description": "Local tools grouped by namespace",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "nested_function",
+                                "parameters": {"type": "object"},
+                            },
+                        ],
+                    },
                 ]
                 image_input = [
                     {
@@ -259,6 +271,23 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                             for value in (None, {}, "invalid", [None], [{}], [{"type": 1}])
                         ]
                         blocked_fields += [
+                            {
+                                "tools": [
+                                    {
+                                        "type": "namespace",
+                                        "name": "hosted_group",
+                                        "tools": [{"type": hosted_type}],
+                                    },
+                                ],
+                            }
+                            for hosted_type in ("web_search", "code_interpreter", "unknown_future_tool")
+                        ]
+                        blocked_fields += [
+                            {"tools": [{"type": "namespace", "name": "missing_tools"}]},
+                            {"tools": [{"type": "namespace", "name": "bad_tools", "tools": None}]},
+                            {"tools": [{"type": "namespace", "name": "empty_items", "tools": [None]}]},
+                        ]
+                        blocked_fields += [
                             {"web_search_options": value}
                             for value in ({}, None, False)
                         ]
@@ -283,6 +312,20 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                                 },
                                 {"input": [{"type": "additional_tools"}]},
                                 {"input": [{"type": "additional_tools", "tools": None}]},
+                                {
+                                    "input": [
+                                        {
+                                            "type": "additional_tools",
+                                            "tools": [
+                                                {
+                                                    "type": "namespace",
+                                                    "name": "hosted_group",
+                                                    "tools": [{"type": "web_search"}],
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
                             ]
                         elif route == "/v1/messages":
                             blocked_fields += [
