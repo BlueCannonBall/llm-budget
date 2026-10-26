@@ -15,7 +15,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked October 23, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked October 26, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES;
@@ -61,12 +61,6 @@ namespace providers {
                 .name = "longcat-2.0",
                 .protocols = permitted_protocols,
                 .rates = {.input = 300'000, .cached_read = 6'000, .output = 1'200'000, .cached_write = 300'000},
-            },
-
-            {
-                .name = "longcat-2.5-preview-free",
-                .protocols = permitted_protocols,
-                .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
             },
 
             {
@@ -164,9 +158,9 @@ namespace providers {
             },
 
             {
-                .name = "gemini-4-argon-contributor",
+                .name = "gemini-4-argon",
                 .protocols = permitted_protocols,
-                .rates = {.input = 4'000'000, .cached_read = 200'000, .output = 20'000'000, .cached_write = 4'000'000},
+                .rates = {.input = 2'000'000, .cached_read = 100'000, .output = 10'000'000, .cached_write = 2'000'000},
             },
 
             {
@@ -235,7 +229,6 @@ namespace providers {
             {.model = "kimi-k3", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "kimi-k2.7-code", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "longcat-2.0", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
-            {.model = "longcat-2.5-preview-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "step-5-preview", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "beam-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "minimax-m3.1-flash", .go_monthly_usd = 20, .go_plus_monthly_usd = 80},
@@ -251,7 +244,7 @@ namespace providers {
             {.model = "qwen3.7-plus", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "deepseek-v4.1-flash", .go_monthly_usd = 80, .go_plus_monthly_usd = 160},
             {.model = "deepseek-v4-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
-            {.model = "gemini-4-argon-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
+            {.model = "gemini-4-argon", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "hy4-preview", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "hy3", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "grok-4.7", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},

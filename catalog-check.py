@@ -118,6 +118,9 @@ def model_id(label):
     # Display names are not always API IDs; all other current names normalize.
     if label == "Claude Haiku 5.5":
         return "claude-haiku-5-5"
+    # The pricing label includes a temporary promotion, not part of the ID.
+    if label == "Gemini 4 Argon (50% off)":
+        return "gemini-4-argon"
     return label.lower().replace(" ", "-")
 
 

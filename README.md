@@ -109,21 +109,22 @@ The proxy replaces the outbound `model` with the upstream model ID. Unqualified
 `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
 models require qualification. There is no automatic fallback to another provider.
 Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
-baseline checked October 23, 2026; Go allowances updated October 23, 2026:
+baseline checked October 26, 2026; Go allowances updated October 26, 2026:
 
 - **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
   `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
   aliases and old Chat/Reasoner IDs are not separate catalog entries.
   Sources: [models/pricing](https://api-docs.deepseek.com/quick_start/pricing/),
   [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
-- **OpenCode Go:** 30 [documented models](https://opencode.ai/v2/docs/console/go),
+- **OpenCode Go:** 29 [documented models](https://opencode.ai/v2/docs/console/go),
   with token rates, long-context tiers, and both Go/Go Plus allowances. Every
   cataloged Go model is permitted through all three proxy routes. Go determines
   protocol compatibility; upstream rejections are forwarded unchanged, without
   protocol translation. Permitted routing does not guarantee upstream support.
   `opencode-go/claude-haiku-5-5` uses Messages upstream, with a whole-request
-  price increase above 100,000 input tokens. `beam-free` and
-  `longcat-2.5-preview-free` are temporarily free and unlimited.
+  price increase above 100,000 input tokens. `beam-free` is temporarily free
+  and unlimited. `gemini-4-argon` is discounted 50% through November 30, 2026; current rates
+  are $2/$10 per million input/output tokens with $30/$120 Go/Go Plus allowances.
   `kimi-k3.1-pro` costs $2.00/$10.00 per million input/output tokens, with
   $15/$60 Go/Go Plus allowances. `minimax-m3.1-flash` costs $0.15/$0.60,
   with $20/$80 allowances; the retired free ID is not accepted.

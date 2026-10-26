@@ -85,14 +85,20 @@ class CatalogTests(unittest.TestCase):
         html = go_html(go=60, plus=240)
         html = html.replace("<td>$60</td>", '<td><del>$30</del> <strong>$60</strong><br/><small>2x · Limited time</small></td>')
         html = html.replace("<td>$240</td>", '<td><del>$120</del> <strong>$240</strong><br/><small>2x · Limited time</small></td>')
-        html = html.replace("DeepSeek V4.1 Flash", "Gemini 4 Argon Contributor")
+        html = html.replace("DeepSeek V4.1 Flash", "Gemini 4 Argon (50% off)")
         catalog = checker.go_catalog(html)
         for tier in ("Off-Peak", "Peak"):
-            model = catalog[("gemini-4-argon-contributor", tier)]
+            model = catalog[("gemini-4-argon", tier)]
             self.assertEqual(model["go"], 60)
             self.assertEqual(model["go-plus"], 240)
         differences = checker.compare(self.repo, html, DIRECT_HTML)
-        self.assertTrue(any("Go models" in item and "gemini-4-argon-contributor" in item for item in differences))
+        self.assertTrue(any("Go models" in item and "gemini-4-argon" in item for item in differences))
+
+    def test_gemini_promotion_label_maps_to_api_model_id(self):
+        html = go_html().replace("DeepSeek V4.1 Flash", "Gemini 4 Argon (50% off)")
+        catalog = checker.go_catalog(html)
+        self.assertIn(("gemini-4-argon", "Off-Peak"), catalog)
+        self.assertNotIn(("gemini-4-argon-(50%-off)", "Off-Peak"), catalog)
 
     def test_promotion_detects_allowance_changes(self):
         html = go_html().replace("<td>$80</td>", '<td><del>$80</del> <strong>$160</strong><br/><small>2x · Limited time</small></td>')
