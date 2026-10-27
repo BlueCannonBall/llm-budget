@@ -100,6 +100,27 @@ class CatalogTests(unittest.TestCase):
         self.assertIn(("gemini-4-argon", "Off-Peak"), catalog)
         self.assertNotIn(("gemini-4-argon-(50%-off)", "Off-Peak"), catalog)
 
+    def test_iceman_contributor_free_model(self):
+        html = go_html().replace(
+            "</table>",
+            '<tr><td>Iceman Contributor Free</td><td>Free</td><td>Free</td>'
+            '<td>Free</td><td>-</td><td>Unlimited</td></tr></table>',
+        )
+        catalog = checker.go_catalog(html)
+        self.assertEqual(
+            catalog[("iceman-contributor-free", "")],
+            {
+                "rates": {
+                    "input": 0,
+                    "output": 0,
+                    "cached_read": 0,
+                    "cached_write": 0,
+                },
+                "go": 0,
+                "go-plus": 0,
+            },
+        )
+
     def test_promotion_detects_allowance_changes(self):
         html = go_html().replace("<td>$80</td>", '<td><del>$80</del> <strong>$160</strong><br/><small>2x · Limited time</small></td>')
         differences = checker.compare(self.repo, html, DIRECT_HTML)
