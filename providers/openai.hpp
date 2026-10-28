@@ -12,7 +12,7 @@ namespace providers {
             .responses_base_url = "https://api.openai.com/v1",
         };
 
-        // Standard text-token rates, checked October 8, 2026. No tool or service-tier fees.
+        // Standard text-token rates, checked October 28, 2026. No tool or service-tier fees.
         // https://developers.openai.com/api/docs/pricing
         // Protocol support: https://developers.openai.com/api/docs/models/<model-id>
         // Models without discounted cache pricing use the ordinary input rate.
@@ -31,6 +31,14 @@ namespace providers {
                 .rates = {.input = 2'000'000, .cached_read = 100'000, .output = 10'000'000, .cached_write = 2'500'000},
                 .input_token_threshold = 272'000,
                 .above_threshold_rates = {.input = 4'000'000, .cached_read = 200'000, .output = 15'000'000, .cached_write = 5'000'000},
+            },
+
+            {
+                .name = "gpt-6.1-terra",
+                .protocols = PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_RESPONSES,
+                .rates = {.input = 1'000'000, .cached_read = 50'000, .output = 5'000'000, .cached_write = 1'250'000},
+                .input_token_threshold = 272'000,
+                .above_threshold_rates = {.input = 2'000'000, .cached_read = 100'000, .output = 7'500'000, .cached_write = 2'500'000},
             },
 
             {

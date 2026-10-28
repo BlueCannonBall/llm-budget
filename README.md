@@ -109,7 +109,7 @@ The proxy replaces the outbound `model` with the upstream model ID. Unqualified
 `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
 models require qualification. There is no automatic fallback to another provider.
 Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
-baseline checked October 27, 2026; Go allowances updated October 27, 2026:
+baseline checked October 28, 2026; Go allowances updated October 27, 2026:
 
 - **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
   `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
@@ -131,13 +131,13 @@ baseline checked October 27, 2026; Go allowances updated October 27, 2026:
   with $20/$80 allowances; the retired free ID is not accepted.
   `opencode-go/step-5-preview` is priced at $1.00/$2.70 per million input/output tokens,
   with a usage allowance of $15 on Go and $60 on Go Plus.
-- **OpenAI:** 35 text/coding models, with endpoint support checked against each
+- **OpenAI:** 36 text/coding models, with endpoint support checked against each
   [model page](https://developers.openai.com/api/docs/models) and standard rates
   from [pricing](https://developers.openai.com/api/docs/pricing):
 
 | Family | Model IDs (prefix with `openai/`) |
 | --- | --- |
-| GPT-6 | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna` |
+| GPT-6 | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna` |
 | GPT-5.6 | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
 | GPT-5.5 / 5.4 | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4-pro` |
 | GPT-5.2 / 5.1 / 5 | `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-pro` |
