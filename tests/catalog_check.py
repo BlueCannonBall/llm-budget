@@ -201,6 +201,26 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(len(differences), 1)
         self.assertIn("cached_write", differences[0])
 
+    def test_minimax_context_threshold_512k(self):
+        self.go_path.write_text('''Model model_catalog[] {
+            {
+                .name = "minimax-m3",
+                .rates = {.input = 300'000, .cached_read = 60'000, .output = 1'200'000, .cached_write = 300'000},
+                .input_token_threshold = 512'000,
+                .above_threshold_rates = {.input = 600'000, .cached_read = 120'000, .output = 2'400'000, .cached_write = 600'000},
+            },
+        };
+        .model = "minimax-m3", .go_monthly_usd = 60, .go_plus_monthly_usd = 180
+''')
+        html = go_html(go=60, plus=180)
+        html = html.replace("DeepSeek V4.1 Flash (Off-Peak)", "MiniMax M3 (≤ 512K tokens)")
+        html = html.replace("DeepSeek V4.1 Flash (Peak)", "MiniMax M3 (&gt; 512K tokens)")
+        html = html.replace("<td>$0.15</td><td>$0.60</td><td>$0.003</td><td>-</td>",
+                            "<td>$0.30</td><td>$1.20</td><td>$0.06</td><td>-</td>")
+        html = html.replace("<td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td>",
+                            "<td>$0.60</td><td>$2.40</td><td>$0.12</td><td>-</td>")
+        self.assertEqual(checker.compare(self.repo, html, DIRECT_HTML), [])
+
     def test_schedule_changed_fails_closed(self):
         with self.assertRaises(ValueError):
             checker.compare(self.repo, go_html().replace("01:00-04:00", "02:00-04:00"), DIRECT_HTML)

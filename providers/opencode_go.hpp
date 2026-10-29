@@ -15,7 +15,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked October 27, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked October 29, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES;
@@ -115,6 +115,8 @@ namespace providers {
                 .name = "minimax-m3",
                 .protocols = permitted_protocols,
                 .rates = {.input = 300'000, .cached_read = 60'000, .output = 1'200'000, .cached_write = 300'000},
+                .input_token_threshold = 512'000,
+                .above_threshold_rates = {.input = 600'000, .cached_read = 120'000, .output = 2'400'000, .cached_write = 600'000},
             },
 
             {
