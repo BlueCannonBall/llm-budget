@@ -413,8 +413,8 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
 
             assert request("opencode-go/deepseek-v4.1-flash", stream=True, user=1)[0] == 200
             go = last_row()
-            # $10 Go subscription / $80 Flash allowance, rounded up once.
-            assert go in (75003788, 150007575), go
+            # $10 Go subscription / $100 Flash allowance, rounded up once.
+            assert go in (60003030, 120006060), go
             assert go < direct
             assert seen[-1][0] == "https://opencode.ai/zen/go/v1/chat/completions"
             assert seen[-1][1]["Authorization"] == "Bearer test-go"
@@ -674,7 +674,7 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                               "total_tokens": 211991}
             provisional_usage = {"prompt_tokens": 211852, "completion_tokens": 139}
             nominal = 209164 * 150000 + 2688 * 3000 + 139 * 600000
-            expected_costs = ((nominal + 7999) // 8000, (nominal * 2 + 7999) // 8000)
+            expected_costs = ((nominal + 9999) // 10000, (nominal * 2 + 4999) // 5000)
             assert request("opencode-go/deepseek-v4.1-flash", stream=True,
                            metadata={"usage_events": [provisional_usage, reported_usage]})[0] == 200
             assert last_row() in expected_costs

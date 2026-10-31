@@ -109,7 +109,7 @@ The proxy replaces the outbound `model` with the upstream model ID. Unqualified
 `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
 models require qualification. There is no automatic fallback to another provider.
 Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
-baseline checked October 28, 2026; Go allowances updated October 27, 2026:
+baseline checked October 28, 2026; Go allowances updated October 31, 2026:
 
 - **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
   `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
