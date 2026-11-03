@@ -1,7 +1,8 @@
 # LLM Budget
 
 An LLM API proxy and budget limiter for DeepSeek, OpenCode Go, and selected OpenAI
-models. It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages formats,
+models. It supports OpenAI Chat Completions, OpenAI Responses, Anthropic Messages,
+and Google Gemini formats,
 authenticates callers with per-user API keys, and rejects new requests when a
 user's five-hour or weekly dollar budget is exhausted. Direct API requests count
 estimated token cost; Go requests count an allocated share of one shared subscription.
@@ -87,13 +88,14 @@ server. Provider keys are loaded once at startup, so changes require a restart.
 
 ## Proxy
 
-All three routes forward JSON to the provider selected by the request's model:
+All four routes forward JSON to the provider selected by the request's model:
 
 | Local route | User authentication | Available providers |
 | --- | --- | --- |
 | `POST /chat/completions` | `Authorization: Bearer <user API key>` | DeepSeek, all cataloged Go models, OpenAI Chat-capable models |
 | `POST /v1/messages` | `x-api-key: <user API key>` or Bearer authorization | DeepSeek, all cataloged Go models |
 | `POST /responses` | `Authorization: Bearer <user API key>` | DeepSeek, all cataloged Go models, OpenAI models |
+| `POST /v1beta/models/{model}:generateContent` and `:streamGenerateContent` | `x-goog-api-key` or `key` query parameter | all cataloged Go models |
 
 Provider-qualified names pin routing without ambiguity:
 
@@ -102,12 +104,15 @@ deepseek/deepseek-flash
 opencode-go/deepseek-v4.1-flash
 opencode-go/minimax-m3
 opencode-go/gpt-5.6-luna
+opencode-go/gemini-4-argon
 openai/gpt-4.1-mini
 ```
 
-The proxy replaces the outbound `model` with the upstream model ID. Unqualified
-`deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek defaults; other
-models require qualification. There is no automatic fallback to another provider.
+The proxy replaces the outbound `model` with the upstream model ID. On the Gemini
+route the model is in the path instead, and the proxy replaces it there.
+Unqualified `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek
+defaults; other models require qualification. There is no automatic fallback to
+another provider.
 Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
 baseline checked October 28, 2026; Go allowances updated October 31, 2026:
 
@@ -118,7 +123,7 @@ baseline checked October 28, 2026; Go allowances updated October 31, 2026:
   [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
 - **OpenCode Go:** 30 [documented models](https://opencode.ai/v2/docs/console/go),
   with token rates, long-context tiers, and both Go/Go Plus allowances. Every
-  cataloged Go model is permitted through all three proxy routes. Go determines
+  cataloged Go model is permitted through all four proxy routes. Go determines
   protocol compatibility; upstream rejections are forwarded unchanged, without
   protocol translation. Permitted routing does not guarantee upstream support.
   `opencode-go/claude-haiku-5-5` uses Messages upstream, with a whole-request
@@ -155,7 +160,7 @@ Audio, image generation, embeddings, research/tool-fee models, restricted cyber
 models, dated snapshots, and moving ChatGPT aliases are intentionally excluded:
 this is a useful text/coding catalog, not every OpenAI product.
 
-Use `http://127.0.0.1:8787` as the SDK base URL for all three formats. Do not append
+Use `http://127.0.0.1:8787` as the SDK base URL for all four formats. Do not append
 `/v1` or `/anthropic`; the SDK supplies the route path. For example:
 
 ```sh
@@ -171,19 +176,40 @@ name is replaced. Both JSON and SSE responses are
 passed through. This endpoint implements response creation, not retrieval,
 deletion, cancellation, compaction, or WebSocket transport.
 
+The Gemini route accepts `generateContent` and `streamGenerateContent`. The SDK
+builds `/v1beta/models/<model>:<method>` from its configured model ID, so use
+`opencode-go/gemini-4-argon` (or another provider-qualified Go model) as that ID;
+the proxy resolves the qualification and forwards the bare upstream name. Query
+parameters such as `alt=sse` are preserved. `streamGenerateContent` works with
+SSE and with its default JSON array. Only Go models are available on this route.
+
+```sh
+curl 'http://127.0.0.1:8787/v1beta/models/opencode-go%2Fgemini-4-argon:generateContent' \
+    -H "x-goog-api-key: $LLM_BUDGET_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"contents":[{"role":"user","parts":[{"text":"Explain this code"}]}]}'
+```
+
 - Missing, malformed, or unrecognized user credentials get `401`. On the
   Messages route, `Authorization` takes precedence if both headers are supplied.
-- The body must be JSON with a `model` string. Unknown models and locally restricted
+  On the Gemini route, `x-goog-api-key` takes precedence over a `key` query
+  parameter. The query key is removed before forwarding. Prefer the header:
+  credentials in URLs are more likely to be recorded by reverse proxies or shell
+  history.
+- The body must be JSON. Chat Completions, Messages, and Responses require a
+  `model` string in the body; Gemini takes the model from the path. Unknown models and locally restricted
   protocol/model combinations get `400`. Go models have no local protocol
   restrictions; unsupported combinations return Go's upstream error.
-  Methods other than `POST` get `405`.
+  Methods other than `POST` get `405`; an unrecognized Gemini path or generate
+  method gets `404`.
 - Only configure keys for providers you use. A missing, empty, or non-string
   key for a selected provider gets `503` before request admission.
 - A model whose provider cannot resolve its cost multiplier gets `503` before
   scheduling upstream work or creating a request row. A resolved zero multiplier
   is valid and records zero cost; normal user budget admission still applies.
 - Caller credentials are replaced with the selected provider key from
-  `keys.json`: Bearer authorization for Chat Completions and Responses, `x-api-key` for Messages.
+  `keys.json`: Bearer authorization for Chat Completions and Responses, `x-api-key` for Messages,
+  and `x-goog-api-key` for Gemini.
 - Go requests preserve the caller's `User-Agent`, falling back to `llm-budget/1.0`
   when it is absent or empty. `x-opencode-session`, Claude Code's
   `X-Claude-Code-Session-Id`, and Codex's `session-id` and `thread-id` are forwarded
@@ -207,14 +233,21 @@ deletion, cancellation, compaction, or WebSocket transport.
   Ultrafast, and Flex) get `400` before admission or upstream dispatch.
 - All providers permit only client-executed tools: `function` and `custom` tools
   on Chat Completions and Responses; Messages tools with a `name`, `input_schema`,
-  and either no `type` or `type: "custom"`.
+  and either no `type` or `type: "custom"`; Gemini `functionDeclarations` with a
+  string `name`.
   Hosted tools, including image generation, web/file search, and hosted execution,
   get `400` because their additional charges are not accounted for. This also
   applies to tool definitions in Responses `additional_tools` input items.
   Chat Completions `web_search_options` and non-empty `mcp_servers` are also
-  rejected. Unknown tool types are rejected by default, including on Go and
+  rejected. Gemini `googleSearch`, `codeExecution`, `urlContext`, `googleMaps`,
+  `fileSearch`, and unknown tool fields are rejected for the same reason.
+  Unknown tool types are rejected by default, including on Go and
   DeepSeek. Ordinary image inputs remain permitted. Rejections happen before
   budget admission or upstream dispatch.
+- Gemini rejects explicit `cachedContent` references with `400`, because cache
+  storage charges are not accounted for. It also permits only `TEXT` in
+  `generationConfig.responseModalities`; image and audio output prices are not
+  accounted for. Both checks run before admission or upstream dispatch.
 - Messages normalizes existing ephemeral `cache_control` markers to `ttl: "5m"`,
   including automatic top-level caching, system blocks, tool definitions, and
   message content (including nested tool-result content). It does not add cache
@@ -234,7 +267,9 @@ deletion, cancellation, compaction, or WebSocket transport.
   A fetch failure returns `502` if response headers have not been sent; otherwise
   it closes the stream. The request is recorded as interrupted.
 - While the response streams, token usage is read from the SSE events (or a plain
-  JSON body) and priced. The estimate is logged and stored on the request row.
+  JSON body) and priced. Gemini usage comes from cumulative `usageMetadata`
+  objects in SSE events or JSON array elements. The estimate is logged and stored
+  on the request row.
 - Streaming Chat Completions always sets `stream_options.include_usage` to
   `true`, overriding caller opt-outs and preserving other options. Missing or
   null options are created; non-object options get `400`. An upstream response
@@ -477,6 +512,12 @@ previously stored request costs are not recalculated.
   details are ignored. Cache reads are set to zero only when they exceed the input
   total, and cache writes are limited to the uncached remainder; valid input and
   output counts remain billable.
+- Gemini reads `promptTokenCount` (the inclusive prompt total), the cached subset
+  `cachedContentTokenCount`, `toolUsePromptTokenCount`, `candidatesTokenCount`, and
+  `thoughtsTokenCount`. Tool-use prompt tokens are added to input, and thoughts are
+  added to output alongside candidates. There is no cache-write counter, so cache
+  writes are not charged. Cumulative `usageMetadata` objects in SSE events and
+  JSON array elements replace the estimate as they grow.
 - `cost::calculate()` returns one request cost. The proxy passes it to the existing
   `database::update_request()` function, which stores it in `cost_nanodollars`.
   The database schema and stored costs are unchanged; no migration or additional
@@ -530,14 +571,15 @@ These tests use temporary directories and dummy keys. None contact external prov
 `proxy_callbacks.py` links the built server objects with a test-only transport
 destination redirect, then exercises the real proxy against a local HTTP fixture.
 It checks provider-qualified routing, upstream authentication, model rewriting,
-fragmented JSON/SSE usage (including Responses terminal snapshots), Go cost
-allocation, unsupported protocols, unavailable providers/pricing, valid zero
-multipliers, and admission limits using stored rather than nominal Go costs.
+fragmented JSON/SSE usage (including Responses terminal snapshots and Gemini
+`usageMetadata` over SSE and JSON array streams), Go cost allocation, unsupported
+protocols, unavailable providers/pricing, valid zero multipliers, and admission
+limits using stored rather than nominal Go costs.
 The `--tools-only` option checks hosted-tool rejection before admission and
 client-tool forwarding across all providers and supported protocols, with JSON
 and SSE responses, without running the pricing/accounting scenarios.
 
-`proxy_limits.py` exercises all three proxy routes against the real local server,
+`proxy_limits.py` exercises the three body-model proxy routes against the real local server,
 checking exhausted five-hour, weekly, and combined budgets, reset-based
 `Retry-After`, and disabled (`403`) budgets without contacting the upstream.
 

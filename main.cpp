@@ -52,6 +52,7 @@ std::string_view protocol_name(providers::Protocol protocol) {
     case providers::PROTOCOL_CHAT_COMPLETIONS: return "chat_completions";
     case providers::PROTOCOL_RESPONSES: return "responses";
     case providers::PROTOCOL_ANTHROPIC_MESSAGES: return "anthropic_messages";
+    case providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE: return "google_generative_language";
     }
     return "unknown";
 }
@@ -92,6 +93,10 @@ void record_request_cost(
 
     case providers::PROTOCOL_RESPONSES:
         token_usage = cost::from_responses_usage(raw_usage.object(), &warning);
+        break;
+
+    case providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE:
+        token_usage = cost::from_google_usage(raw_usage.object(), &warning);
         break;
 
     default:
@@ -557,6 +562,206 @@ int main(int argc, char** argv) {
                 }),
             });
     }
+
+    server.route("/v1beta/models/",
+        pw::Route {
+            logged_route([&configured](pw::Connection&, pw::Request& inbound_req) {
+                if (inbound_req.method != "POST") {
+                    return make_basic_resp(405, {{"Allow", "POST"}});
+                }
+
+                std::optional<User> user;
+                if (auto api_key_it = inbound_req.headers.find("x-goog-api-key"); api_key_it != inbound_req.headers.end()) {
+                    if (!(user = database::get_user_by_api_key(api_key_it->second))) {
+                        return make_basic_resp(401);
+                    }
+                } else if (auto query_key_it = inbound_req.query_parameters->find("key");
+                    query_key_it != inbound_req.query_parameters->end()) {
+                    if (!(user = database::get_user_by_api_key(query_key_it->second))) {
+                        return make_basic_resp(401);
+                    }
+                } else {
+                    return make_basic_resp(401);
+                }
+
+                // The provider key replaces caller credentials. Do not forward a
+                // caller-supplied query-string key for Go to prefer over the header.
+                inbound_req.query_parameters->erase("key");
+
+                // The model and generate method travel in the decoded path, as in
+                // the Google API. The remaining query parameters stay separate.
+                constexpr std::string_view models_prefix = "/v1beta/models/";
+                std::string_view model_and_method = inbound_req.target;
+                if (!model_and_method.starts_with(models_prefix)) {
+                    return make_basic_resp(404);
+                }
+                model_and_method.remove_prefix(models_prefix.size());
+                size_t method_separator = model_and_method.rfind(':');
+                if (method_separator == std::string_view::npos || method_separator == 0) {
+                    return make_basic_resp(404);
+                }
+
+                std::string_view method = model_and_method.substr(method_separator + 1);
+                if (method != "generateContent" && method != "streamGenerateContent") {
+                    return make_basic_resp(404);
+                }
+
+                std::string_view model = model_and_method.substr(0, method_separator);
+                auto selection = providers::resolve(configured, model);
+                if (!selection) {
+                    return make_basic_resp(400, "Invalid model specified");
+                }
+
+                if (!selection.model->supports(providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE)) {
+                    return make_basic_resp(400, "Model does not support Google Gemini");
+                }
+
+                const auto* provider = selection.provider;
+                if (!provider->configured()) {
+                    return make_basic_resp(503, "Provider is not configured");
+                }
+
+                if (provider->definition().google_generative_language_base_url.empty()) {
+                    return make_basic_resp(400, "Model does not support Google Gemini");
+                }
+
+                pw::Headers outbound_req_headers = {{"Content-Type", "application/json"}};
+
+                SJSON::JSObject req_body;
+                try {
+                    req_body = SJSON::Parse::string(inbound_req.body_to_string()).object();
+                } catch (const SJSON::sjson_parse_error& e) {
+                    return make_basic_resp(400);
+                } catch (const std::bad_variant_access& e) {
+                    return make_basic_resp(400);
+                }
+
+                if (auto error = provider->prepare_request(providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE,
+                        inbound_req.headers,
+                        outbound_req_headers,
+                        req_body,
+                        user->name);
+                    !error.empty()) {
+                    return make_basic_resp(400, std::string(error));
+                }
+
+                auto multiplier = provider->multiplier(*selection.model);
+                if (!multiplier) return make_basic_resp(503, "Pricing unavailable");
+
+                // The method view and query parameters are request-scoped, so
+                // build the complete URL before handing the rest to the worker.
+                std::string upstream_url = std::string(provider->definition().google_generative_language_base_url) + "/v1beta/models/" + std::string(selection.model->name) + ":" + std::string(method);
+                if (!inbound_req.query_parameters->empty()) {
+                    upstream_url += "?" + inbound_req.query_parameters.build();
+                }
+
+                auto now = std::chrono::system_clock::now();
+
+                auto channel = std::make_shared<Channel<Message>>(8000);
+                pw::threadpool.schedule([user = std::move(*user),
+                                            outbound_req_headers = std::move(outbound_req_headers),
+                                            req_body = std::move(req_body),
+                                            definition = &provider->definition(),
+                                            selected_model = selection.model,
+                                            multiplier = *multiplier,
+                                            now,
+                                            upstream_url = std::move(upstream_url),
+                                            channel = std::weak_ptr<Channel<Message>>(channel)]() {
+                    bool sent_head = false;
+                    std::expected<request_id_t, BeginRequestError> request_id;
+                    auto handle_failure = [&]() {
+                        if (auto channel_locked = channel.lock()) {
+                            if (!sent_head) send_basic_resp(*channel_locked, 500);
+                            channel_locked->send(EndMessage {});
+                        }
+                        if (request_id) database::end_request(*request_id, REQUEST_STATE_UNKNOWN);
+                    };
+                    try {
+                        UsageLimits usage_limits;
+                        if (!(request_id = database::begin_request(user.id, usage_limits, now))) {
+                            if (auto channel_locked = channel.lock()) {
+                                send_usage_error_resp(*channel_locked, request_id.error(), usage_limits);
+                                channel_locked->send(EndMessage {});
+                            }
+                            return;
+                        }
+
+                        pw::SSEParser sse_parser([&user, definition, selected_model, &multiplier, now, request_id = *request_id](pw::SSEEvent event) -> bool {
+                            if (event.type != "message") return true;
+
+                            SJSON::JSObject message;
+                            try {
+                                message = SJSON::Parse::string(event.data).object();
+                            } catch (const SJSON::sjson_parse_error& e) {
+                                return false;
+                            } catch (const std::bad_variant_access& e) {
+                                return false;
+                            }
+
+                            if (auto usage_it = message.find("usageMetadata"); usage_it != message.end() && usage_it->second.is_object()) {
+                                record_request_cost(usage_it->second, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE);
+                            }
+
+                            return true;
+                        });
+
+                        SJSON::Parse json_parser;
+                        json_parser.listen("usageMetadata", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
+                            if (!usage.is_object()) {
+                                log_usage_failure("Failed to parse usage", {"usageMetadata", "expected_object"}, usage, user, request_id, *definition, *selected_model, providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE);
+                                return;
+                            }
+                            record_request_cost(usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE);
+                        });
+                        // Without alt=sse, streamGenerateContent returns a JSON array.
+                        json_parser.listen("[].usageMetadata", [&user, definition, selected_model, &multiplier, now, request_id = *request_id](const SJSON::JSValue& usage) {
+                            if (!usage.is_object()) {
+                                log_usage_failure("Failed to parse usage", {"[].usageMetadata", "expected_object"}, usage, user, request_id, *definition, *selected_model, providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE);
+                                return;
+                            }
+                            record_request_cost(usage, user, request_id, *definition, *selected_model, now, multiplier, providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE);
+                        });
+
+                        pw::Response inbound_resp;
+                        configure_response_receiver(inbound_resp, channel, sent_head, sse_parser, json_parser);
+                        if (pn::Status result = pw::fetch("POST", upstream_url, inbound_resp, SJSON::JSValue(req_body).to_string(), outbound_req_headers, upstream_client_config); !result) {
+                            SPDLOG_ERROR("Upstream request failed: {} (user={} id={}, request={}, service={}, model={}, protocol={})",
+                                result.error().message(),
+                                user.name,
+                                user.id,
+                                *request_id,
+                                definition->name,
+                                selected_model->name,
+                                protocol_name(providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE));
+                            if (auto channel_locked = channel.lock()) {
+                                if (!sent_head) send_basic_resp(*channel_locked, 502);
+                                channel_locked->send(EndMessage {});
+                            }
+                            database::end_request(*request_id, REQUEST_STATE_INTERRUPTED);
+                            return;
+                        }
+
+                        if (auto channel_locked = channel.lock()) {
+                            if (!sent_head) {
+                                channel_locked->send(HeadMessage {inbound_resp.status_code, std::move(inbound_resp.headers)});
+                            }
+                            channel_locked->send(EndMessage {});
+                        }
+                        database::end_request(*request_id, REQUEST_STATE_COMPLETED);
+                    } catch (const std::exception& e) {
+                        SPDLOG_ERROR("Proxy request failed: {}", e.what());
+                        handle_failure();
+                    } catch (...) {
+                        SPDLOG_ERROR("Proxy request failed with a non-standard exception");
+                        handle_failure();
+                    }
+                },
+                    true);
+
+                return receive_proxy_response(std::move(channel));
+            }),
+            true,
+        });
 
     server.route("/v1/messages",
         pw::Route {

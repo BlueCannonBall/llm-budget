@@ -181,6 +181,28 @@ namespace cost {
         return TokenUsage {reads, uncached, output, writes};
     }
 
+    // Gemini's promptTokenCount is the inclusive prompt total including cached
+    // content. Tool-use prompts are a separate input counter, and thoughts are
+    // output tokens billed alongside the visible candidates.
+    inline TokenUsage from_google_usage(const SJSON::JSObject& usage, UsageError* warning = nullptr) {
+        auto input = detail::token_count(usage, "promptTokenCount", warning);
+        uint64_t tool_use = detail::token_count(usage, "toolUsePromptTokenCount", warning).value_or(0);
+        auto reads = detail::token_count(usage, "cachedContentTokenCount", warning);
+        uint64_t output = detail::token_count(usage, "candidatesTokenCount", warning).value_or(0);
+        uint64_t thoughts = detail::token_count(usage, "thoughtsTokenCount", warning).value_or(0);
+        output += thoughts;
+
+        uint64_t reads_value = reads.value_or(0);
+        uint64_t misses_value = tool_use;
+        if (input) {
+            uint64_t total_input = *input + tool_use;
+            if (reads_value > total_input) reads_value = 0;
+            misses_value = total_input - reads_value;
+        }
+
+        return TokenUsage {reads_value, misses_value, output, 0};
+    }
+
     // Messages reports disjoint counters: input_tokens excludes the cache counts,
     // while cache_creation_input_tokens is the cache-write count. An unreadable
     // field removes only its own charge.

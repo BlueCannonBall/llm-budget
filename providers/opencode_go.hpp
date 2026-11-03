@@ -12,13 +12,14 @@ namespace providers {
             .chat_completions_base_url = "https://opencode.ai/zen/go/v1",
             .anthropic_messages_base_url = "https://opencode.ai/zen/go",
             .responses_base_url = "https://opencode.ai/zen/go/v1",
+            .google_generative_language_base_url = "https://opencode.ai/inference/go/google",
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
         // Checked October 31, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
-            PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES;
+            PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES | PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE;
 
         inline static constexpr Model model_catalog[] {
             {

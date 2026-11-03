@@ -47,6 +47,7 @@ int main() {
                  providers::PROTOCOL_CHAT_COMPLETIONS,
                  providers::PROTOCOL_RESPONSES,
                  providers::PROTOCOL_ANTHROPIC_MESSAGES,
+                 providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE,
              }) {
             if (!selection.model->supports(protocol)) {
                 continue;
@@ -60,6 +61,81 @@ int main() {
             static_assert(std::is_same_v<decltype(error), std::string_view>);
             assert(error.empty());
             assert(!body.contains("prompt_cache_options"));
+
+            if (protocol == providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE) {
+                assert(outbound_headers.at("x-goog-api-key") == "test-go");
+
+                SJSON::JSObject function_declaration {
+                    {"name", "local_function"},
+                    {"parameters", SJSON::JSObject {{"type", "object"}}},
+                };
+                SJSON::JSObject function_tool {
+                    {"functionDeclarations", SJSON::JSArray {function_declaration}},
+                };
+                body["tools"] = SJSON::JSArray {function_tool};
+                assert(selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {{"googleSearch", SJSON::JSObject {}}},
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {
+                        {"functionDeclarations", SJSON::JSArray {function_declaration}},
+                        {"codeExecution", SJSON::JSObject {}},
+                    },
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {{"functionDeclarations", "invalid"}},
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {{"functionDeclarations", SJSON::JSArray {
+                        SJSON::JSObject {{"parameters", SJSON::JSObject {}}},
+                    }}},
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {
+                    SJSON::JSObject {{"functionDeclarations", SJSON::JSArray {"invalid"}}},
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                body["tools"] = SJSON::JSArray {function_tool};
+                body["cachedContent"] = "cachedContents/one";
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+                body["cachedContent"] = "";
+                assert(selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+                body.erase("cachedContent");
+
+                body["generationConfig"] = SJSON::JSObject {
+                    {"responseModalities", SJSON::JSArray {"TEXT"}},
+                };
+                assert(selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+                body["generationConfig"] = SJSON::JSObject {
+                    {"responseModalities", SJSON::JSArray {"TEXT", "IMAGE"}},
+                };
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+                body["generationConfig"] = SJSON::JSObject {{"responseModalities", "TEXT"}};
+                assert(!selection.provider->prepare_request(
+                    protocol, inbound_headers, outbound_headers, body, "alice").empty());
+
+                continue;
+            }
 
             body["tools"] = SJSON::JSArray {
                 SJSON::JSObject {{"type", "web_search"}},
@@ -118,6 +194,18 @@ int main() {
             }
         }
     }
+
+    for (std::string_view name : {
+             "deepseek/deepseek-flash",
+             "openai/gpt-4.1-mini",
+             "openai/gpt-6.1-sol",
+         }) {
+        auto selection = providers::resolve(configured, name);
+        assert(selection);
+        assert(!selection.model->supports(providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE));
+    }
+    assert(providers::resolve(configured, "opencode-go/gemini-4-argon").model->supports(
+        providers::PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE));
 
     for (std::string_view name : {
              "deepseek/deepseek-flash",

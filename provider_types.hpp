@@ -9,12 +9,15 @@ namespace providers {
         std::string_view chat_completions_base_url;
         std::string_view anthropic_messages_base_url;
         std::string_view responses_base_url;
+        // Empty when the provider does not support the Google Gemini protocol.
+        std::string_view google_generative_language_base_url = {};
     };
 
     enum Protocol : unsigned int {
         PROTOCOL_CHAT_COMPLETIONS = 1,
         PROTOCOL_ANTHROPIC_MESSAGES = 2,
         PROTOCOL_RESPONSES = 4,
+        PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE = 8,
     };
 
     enum Schedule {

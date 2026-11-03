@@ -55,6 +55,39 @@ namespace providers {
             return {};
         }
 
+        // Gemini groups client-executed functions under functionDeclarations. Any
+        // other Tool field selects a hosted Google service whose charges this
+        // proxy does not account for.
+        static std::string_view validate_google_tool(const SJSON::JSValue& tool) {
+            if (!tool.is_object()) {
+                return "Each tool must be an object";
+            }
+
+            for (const auto& [field, value] : tool.object()) {
+                if (field != "functionDeclarations") {
+                    return "Only client-executed function declarations are supported; "
+                           "hosted tool charges are not accounted for";
+                }
+
+                if (!value.is_array()) {
+                    return "functionDeclarations must be an array";
+                }
+
+                for (const auto& declaration : value.array()) {
+                    if (!declaration.is_object()) {
+                        return "Each function declaration must be an object";
+                    }
+
+                    if (auto name_it = declaration.object().find("name");
+                        name_it == declaration.object().end() || !name_it->second.is_string()) {
+                        return "Each function declaration must have a string name";
+                    }
+                }
+            }
+
+            return {};
+        }
+
         static std::string_view validate_tools(Protocol protocol, const SJSON::JSValue& tools) {
             if (!tools.is_array()) {
                 return "tools must be an array";
@@ -84,6 +117,10 @@ namespace providers {
                     if (auto schema_it = tool.object().find("input_schema");
                         schema_it == tool.object().end() || !schema_it->second.is_object()) {
                         return "Client-executed Messages tools must have an input_schema object";
+                    }
+                } else if (protocol == PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE) {
+                    if (auto error = validate_google_tool(tool); !error.empty()) {
+                        return error;
                     }
                 } else {
                     if (auto error = validate_openai_tool(tool, 0); !error.empty()) {
@@ -133,6 +170,30 @@ namespace providers {
                             }
                         } else {
                             return "additional_tools input items must contain tools";
+                        }
+                    }
+                }
+            }
+
+            return {};
+        }
+
+        static std::string_view validate_google_request(const SJSON::JSObject& body) {
+            if (auto cached_it = body.find("cachedContent"); cached_it != body.end() && !cached_it->second.is_null()) {
+                if (!cached_it->second.is_string() || !cached_it->second.string().empty()) {
+                    return "Explicit cached content is not supported; cache storage charges are not accounted for";
+                }
+            }
+
+            if (auto config_it = body.find("generationConfig"); config_it != body.end() && config_it->second.is_object()) {
+                if (auto modalities_it = config_it->second.object().find("responseModalities"); modalities_it != config_it->second.object().end()) {
+                    if (!modalities_it->second.is_array()) {
+                        return "generationConfig.responseModalities must be an array";
+                    }
+
+                    for (const auto& modality : modalities_it->second.array()) {
+                        if (!modality.is_string() || modality.string() != "TEXT") {
+                            return "Only text response modalities are supported; other modality prices are not accounted for";
                         }
                     }
                 }
@@ -256,6 +317,8 @@ namespace providers {
                         outbound_headers[header] = header_it->second;
                     }
                 }
+            } else if (protocol == PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE) {
+                outbound_headers["x-goog-api-key"] = api_key;
             }
         }
 
@@ -324,6 +387,12 @@ namespace providers {
                 return error;
             }
 
+            if (protocol == PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE) {
+                if (auto error = validate_google_request(body); !error.empty()) {
+                    return error;
+                }
+            }
+
             if (protocol == PROTOCOL_CHAT_COMPLETIONS || protocol == PROTOCOL_RESPONSES) {
                 if (auto error = normalize_service_tier(body); !error.empty()) {
                     return error;
@@ -343,6 +412,7 @@ namespace providers {
                 break;
 
             case PROTOCOL_CHAT_COMPLETIONS:
+            case PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE:
                 break;
             }
 

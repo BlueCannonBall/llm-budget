@@ -130,6 +130,25 @@ int main() {
     check_usage(cost::from_responses_usage({{"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 36}}}}), 0, 35, 0);
     check_usage(cost::from_responses_usage({{"input_tokens_details", "invalid"}}), 0, 0, 0);
 
+    // Gemini's prompt count includes cached content; tool-use prompts are added
+    // to input and thoughts are billed with candidate output.
+    SJSON::JSObject google_usage {
+        {"promptTokenCount", 35}, {"cachedContentTokenCount", 10},
+        {"candidatesTokenCount", 12}, {"thoughtsTokenCount", 4},
+        {"totalTokenCount", 51},
+    };
+    check_usage(cost::from_google_usage(google_usage), 10, 25, 16);
+    check_cost("opencode-go", "gemini-4-argon", cost::from_google_usage(google_usage), off_peak, 70334);
+    check_usage(cost::from_google_usage({
+        {"promptTokenCount", 30}, {"toolUsePromptTokenCount", 5},
+        {"cachedContentTokenCount", 10}, {"candidatesTokenCount", 16}}), 10, 25, 16);
+    check_usage(cost::from_google_usage({
+        {"promptTokenCount", 35}, {"cachedContentTokenCount", 36},
+        {"candidatesTokenCount", 16}}), 0, 35, 16);
+    check_usage(cost::from_google_usage({
+        {"cachedContentTokenCount", 10}, {"candidatesTokenCount", 16}}), 10, 0, 16);
+    check_usage(cost::from_google_usage({}), 0, 0, 0);
+
     auto response_writes = cost::from_responses_usage({
         {"input_tokens", 35}, {"input_tokens_details", SJSON::JSObject {{"cached_tokens", 10}, {"cache_write_tokens", 5}}},
         {"output_tokens", 16},
@@ -172,6 +191,26 @@ int main() {
         std::numeric_limits<SJSON::JSNumber>::infinity(),
         std::numeric_limits<SJSON::JSNumber>::quiet_NaN(),
     };
+    for (const auto& field : {"promptTokenCount", "cachedContentTokenCount", "candidatesTokenCount", "thoughtsTokenCount", "toolUsePromptTokenCount"}) {
+        for (const auto& value : invalid_counts) {
+            auto invalid = google_usage;
+            invalid[field] = value;
+            cost::UsageError warning {};
+            auto parsed = cost::from_google_usage(invalid, &warning);
+            if (field == "promptTokenCount") {
+                check_usage(parsed, 10, 0, 16);
+            } else if (field == "cachedContentTokenCount") {
+                check_usage(parsed, 0, 35, 16);
+            } else if (field == "candidatesTokenCount") {
+                check_usage(parsed, 10, 25, 4);
+            } else if (field == "thoughtsTokenCount") {
+                check_usage(parsed, 10, 25, 12);
+            } else {
+                check_usage(parsed, 10, 25, 16);
+            }
+            assert(warning.field == field);
+        }
+    }
     for (const auto& value : invalid_counts) {
         auto invalid = responses_usage;
         invalid["input_tokens"] = value;

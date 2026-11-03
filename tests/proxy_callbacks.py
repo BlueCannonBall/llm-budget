@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+from urllib.parse import quote
 
 
 root = pathlib.Path(__file__).resolve().parents[1]
@@ -65,6 +66,19 @@ class Upstream(BaseHTTPRequestHandler):
                 payload = (prefix + event_name + 'data: ' + json.dumps(event) + '\n\n').encode()
             else:
                 payload = json.dumps(response).encode()
+        elif "generatecontent" in self.path.lower():
+            usage = {"promptTokenCount": 300, "cachedContentTokenCount": 100,
+                     "candidatesTokenCount": 900, "thoughtsTokenCount": 100,
+                     "totalTokenCount": 1300}
+            events = body.get("metadata", {}).get("usage_events", [usage])
+            streaming = ":streamGenerateContent" in self.path
+            if streaming and not body.get("metadata", {}).get("json_stream"):
+                payload = (''.join('data: ' + json.dumps({"usageMetadata": event}) + '\n\n'
+                                   for event in events)).encode()
+            elif streaming:
+                payload = json.dumps([{"usageMetadata": event} for event in events]).encode()
+            else:
+                payload = json.dumps({"candidates": [], "usageMetadata": events[-1]}).encode()
         elif self.path.endswith("/messages"):
             usage = {"input_tokens": 200, "cache_read_input_tokens": 100,
                      "cache_creation_input_tokens": 5, "output_tokens": 1000}
@@ -92,7 +106,10 @@ class Upstream(BaseHTTPRequestHandler):
                 usage = body.get("metadata", {}).get("usage_events", [usage])[-1]
                 payload = json.dumps({"usage": usage}).encode()
         self.send_response(200)
-        content_type = body.get("metadata", {}).get("test_content_type", "text/event-stream" if body.get("stream") else "application/json")
+        default_content_type = "text/event-stream" if body.get("stream") else "application/json"
+        if ":streamGenerateContent" in self.path and not body.get("metadata", {}).get("json_stream"):
+            default_content_type = "text/event-stream"
+        content_type = body.get("metadata", {}).get("test_content_type", default_content_type)
         if content_type is not None:
             self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
@@ -171,8 +188,12 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
 
             def request(model, route="/chat/completions", stream=False, user=0, metadata=None, extra_headers=None, body_fields=None):
                 connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
-                headers = {"Content-Type": "application/json", "Authorization": "Bearer " + keys[user],
+                headers = {"Content-Type": "application/json",
                            "x-opencode-session": "conversation-1", "session-id": "codex-conversation-1", "thread-id": "codex-thread-1"}
+                if route.startswith("/v1beta/models/"):
+                    headers["x-goog-api-key"] = keys[user]
+                else:
+                    headers["Authorization"] = "Bearer " + keys[user]
                 if extra_headers is not None:
                     headers.update(extra_headers)
                 body = {"model": model, "stream": stream}
@@ -181,6 +202,33 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
                 body.setdefault("input" if route == "/responses" else "messages", "local prompt" if route == "/responses" else [])
                 if metadata is not None:
                     body["metadata"] = metadata
+                connection.request("POST", route, json.dumps(body), headers)
+                response = connection.getresponse()
+                result = response.status, response.read()
+                connection.close()
+                return result
+
+            def google_request(model, stream=False, user=0, metadata=None, extra_headers=None,
+                               body_fields=None, sse=True, method=None, google_key=True, query="",
+                               encode_model=True):
+                connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
+                headers = {"Content-Type": "application/json",
+                           "x-opencode-session": "conversation-1"}
+                if google_key:
+                    headers["x-goog-api-key"] = keys[user]
+                if extra_headers is not None:
+                    headers.update(extra_headers)
+                body = {"contents": [{"role": "user", "parts": [{"text": "local prompt"}]}]}
+                if body_fields is not None:
+                    body.update(body_fields)
+                if metadata is not None:
+                    body["metadata"] = metadata
+                method = method or ("streamGenerateContent" if stream else "generateContent")
+                path_model = quote(model, safe="") if encode_model else model
+                route = "/v1beta/models/" + path_model + ":" + method
+                if stream and sse:
+                    route += "?alt=sse"
+                route += query
                 connection.request("POST", route, json.dumps(body), headers)
                 response = connection.getresponse()
                 result = response.status, response.read()
@@ -623,6 +671,102 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             assert request("opencode-go/glm-5.3-flash", "/responses")[0] == 200
             assert last_row() == 88834
 
+            # Google Gemini protocol: model and generate method travel in the path,
+            # including percent-encoded provider qualification. Usage comes from
+            # usageMetadata for both SSE and the non-SSE JSON array stream.
+            for stream in (False, True):
+                assert google_request("opencode-go/gemini-4-argon", stream=stream)[0] == 200
+                assert last_row() == 3470000
+                suffix = "streamGenerateContent?alt=sse" if stream else "generateContent"
+                assert seen[-1][0] == ("https://opencode.ai/inference/go/google/v1beta/models/"
+                                       "gemini-4-argon:" + suffix)
+                assert seen[-1][1]["x-goog-api-key"] == "test-go"
+                assert "Authorization" not in seen[-1][1]
+                assert seen[-1][1]["x-opencode-session"] == "conversation-1"
+                assert seen[-1][2]["contents"][0]["parts"][0]["text"] == "local prompt"
+                assert "model" not in seen[-1][2]
+
+            assert google_request("opencode-go/gemini-4-argon", stream=True, sse=False,
+                                  metadata={"json_stream": True})[0] == 200
+            assert last_row() == 3470000
+            assert seen[-1][0].endswith("/gemini-4-argon:streamGenerateContent")
+
+            # SDKs differ on whether the qualification slash is percent-encoded.
+            assert google_request("opencode-go/gemini-4-argon", encode_model=False)[0] == 200
+            assert last_row() == 3470000
+
+            # Native Gemini authenticates with an API-key header or query key,
+            # not a Bearer token.
+            assert google_request("opencode-go/gemini-4-argon", google_key=False,
+                                  extra_headers={"Authorization": "Bearer " + keys[0]})[0] == 401
+            assert google_request("opencode-go/gemini-4-argon", google_key=False)[0] == 401
+
+            # A query-string key is the last authentication fallback and is
+            # stripped before forwarding.
+            assert google_request("opencode-go/gemini-4-argon", google_key=False,
+                                  query="?key=" + keys[0])[0] == 200
+            assert last_row() == 3470000
+            assert seen[-1][0] == ("https://opencode.ai/inference/go/google/v1beta/models/"
+                                   "gemini-4-argon:generateContent")
+            calls_before = len(seen)
+            assert google_request("opencode-go/gemini-4-argon", google_key=False,
+                                  query="?key=invalid")[0] == 401
+            assert len(seen) == calls_before
+            # Headers win over the query parameter, even when the query key is valid.
+            assert google_request("opencode-go/gemini-4-argon",
+                                  extra_headers={"x-goog-api-key": "invalid"},
+                                  query="?key=" + keys[0])[0] == 401
+
+            assert google_request("opencode-go/gemini-4-argon", method="countTokens")[0] == 404
+
+            calls_before = len(seen)
+            rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+            for model in ("deepseek/deepseek-flash", "openai/gpt-4.1-mini", "not-a-model"):
+                assert google_request(model)[0] == 400
+            assert len(seen) == calls_before
+            assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
+
+            # A caller-supplied query key is stripped, not forwarded or rejected.
+            assert google_request("opencode-go/gemini-4-argon", query="?key=leaked")[0] == 200
+            assert last_row() == 3470000
+            assert seen[-1][0] == ("https://opencode.ai/inference/go/google/v1beta/models/"
+                                   "gemini-4-argon:generateContent")
+            assert google_request("opencode-go/gemini-4-argon", stream=True,
+                                  query="&key=leaked")[0] == 200
+            assert last_row() == 3470000
+            assert seen[-1][0].endswith("/gemini-4-argon:streamGenerateContent?alt=sse")
+
+            google_tools = [{
+                "functionDeclarations": [{
+                    "name": "local_function",
+                    "parameters": {"type": "object"},
+                }],
+            }]
+            blocked_fields = [
+                {"tools": [{"googleSearch": {}}]},
+                {"tools": [{"codeExecution": {}}]},
+                {"tools": [{"functionDeclarations": [{"parameters": {}}]}]},
+                {"tools": [{"functionDeclarations": "invalid"}]},
+                {"tools": [{"functionDeclarations": [None]}]},
+                {"tools": "invalid"},
+                {"tools": [None]},
+                {"cachedContent": "cachedContents/one"},
+                {"generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}},
+                {"generationConfig": {"responseModalities": "TEXT"}},
+            ]
+            for fields in blocked_fields:
+                calls_before = len(seen)
+                rows_before = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+                status, payload = google_request("opencode-go/gemini-4-argon", body_fields=fields)
+                assert status == 400, (fields, status, payload)
+                assert len(seen) == calls_before
+                assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == rows_before
+
+            assert google_request("opencode-go/gemini-4-argon",
+                                  body_fields={"tools": google_tools})[0] == 200
+            assert last_row() == 3470000
+            assert seen[-1][2]["tools"] == google_tools
+
             count = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
             calls = len(seen)
             assert request("not-a-model")[0] == 400
@@ -693,7 +837,9 @@ pn::Status local_fetch(std::string method, pn::StringView url, pw::Response& res
             for route, model, protocol, service in (
                     ("/chat/completions", "openai/gpt-4.1-mini", "chat_completions", "openai"),
                     ("/responses", "openai/gpt-4.1-mini", "responses", "openai"),
-                    ("/v1/messages", "opencode-go/minimax-m3", "anthropic_messages", "opencode-go")):
+                    ("/v1/messages", "opencode-go/minimax-m3", "anthropic_messages", "opencode-go"),
+                    ("/v1beta/models/opencode-go%2Fgemini-4-argon:streamGenerateContent?alt=sse",
+                     "opencode-go/gemini-4-argon", "google_generative_language", "opencode-go")):
                 for failure in ("headers", "body"):
                     status, payload = request(model, route, stream=True,
                                               metadata={"transport_failure": failure})
@@ -847,4 +993,4 @@ namespace providers {
         upstream.server_close()
         thread.join(timeout=5)
 
-print("PASS: all three proxy protocols, Responses JSON/terminal SSE accounting, budget limits, unavailable providers/pricing without dispatch or rows, and valid zero multipliers")
+print("PASS: all four proxy protocols, Responses JSON/terminal SSE accounting, budget limits, unavailable providers/pricing without dispatch or rows, and valid zero multipliers")
