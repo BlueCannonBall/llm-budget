@@ -16,7 +16,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked October 31, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked November 5, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES | PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE;
@@ -179,6 +179,12 @@ namespace providers {
             },
 
             {
+                .name = "hy4",
+                .protocols = permitted_protocols,
+                .rates = {.input = 834'000, .cached_read = 42'000, .output = 2'501'000, .cached_write = 834'000},
+            },
+
+            {
                 .name = "hy3",
                 .protocols = permitted_protocols,
                 .rates = {.input = 140'000, .cached_read = 35'000, .output = 580'000, .cached_write = 140'000},
@@ -256,6 +262,7 @@ namespace providers {
             {.model = "deepseek-v4-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "gemini-4-argon", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
             {.model = "hy4-preview", .go_monthly_usd = 30, .go_plus_monthly_usd = 120},
+            {.model = "hy4", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "hy3", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "grok-4.7", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "claude-haiku-5-5", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},

@@ -114,14 +114,14 @@ Unqualified `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek
 defaults; other models require qualification. There is no automatic fallback to
 another provider.
 Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
-baseline checked October 28, 2026; Go allowances updated October 31, 2026:
+baseline checked October 28, 2026; Go catalog checked November 5, 2026:
 
 - **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
   `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
   aliases and old Chat/Reasoner IDs are not separate catalog entries.
   Sources: [models/pricing](https://api-docs.deepseek.com/quick_start/pricing/),
   [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
-- **OpenCode Go:** 30 [documented models](https://opencode.ai/v2/docs/console/go),
+- **OpenCode Go:** 31 [documented models](https://opencode.ai/v2/docs/console/go),
   with token rates, long-context tiers, and both Go/Go Plus allowances. Every
   cataloged Go model is permitted through all four proxy routes. Go determines
   protocol compatibility; upstream rejections are forwarded unchanged, without
