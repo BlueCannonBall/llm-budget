@@ -2,10 +2,10 @@
 
 An LLM API proxy and budget limiter for DeepSeek, OpenCode Go, and selected OpenAI
 models. It supports OpenAI Chat Completions, OpenAI Responses, Anthropic Messages,
-and Google Gemini formats,
-authenticates callers with per-user API keys, and rejects new requests when a
-user's five-hour or weekly dollar budget is exhausted. Direct API requests count
-estimated token cost; Go requests count an allocated share of one shared subscription.
+and Google Gemini formats, authenticates callers with per-user API keys, and rejects
+new requests when a user's five-hour or weekly dollar budget is exhausted. Direct
+API requests count estimated token cost; Go requests count an allocated share of one
+shared subscription.
 
 Budget checks happen before each upstream request. They are not hard spending
 caps: an admitted request can exceed the remaining budget, and concurrent
@@ -29,22 +29,7 @@ Polybuild is only needed to regenerate the makefiles when source files, include
 dependencies, or `Polybuild.toml` change: run `polybuild generate` before rebuilding.
 Ordinary edits covered by the existing dependency rules only need `make`.
 
-First-party C++ follows `main.cpp` and `.clang-format`: four-space indentation,
-snake_case functions and members without trailing underscores, protected state
-before the public API, unqualified fixed-width integer types, C-style numeric
-casts, and `case` labels aligned with `switch`. Keep blank lines between logical
-stages. File-local C++ helpers are `static`. Namespaces identify library-like
-subsystems (`providers`, `cost`, `database`, and the existing dependency libraries),
-not individual application files. Application APIs such as `run_cli`,
-`parse_nanodollars`, `UsagePageAssets`, and `handle_usage_request` share application
-scope with `Channel`. Persistence functions and implementation details belong to
-`namespace database`, initialized with `database::init()`. Shared types (`User`,
-`UsageLimits`, `UserUsage`), ID typedefs, and enums remain global. Callers use explicit
-`database::` qualification; there is no `init_db` alias, umbrella namespace, or
-compatibility alias. JavaScript follows `lux/index.js`: camelCase custom identifiers
-and four-space indentation. Native DOM API names and wire-format fields are unchanged.
-Raw SQL bodies are indented one level inside their C++ statements; raw-string
-closing delimiters align with the statement, including inside namespaces.
+Code, documentation, and asset style rules are in `AGENTS.md`.
 
 The server loads data and page assets from the current working directory, so run
 it from the directory that holds them:
@@ -63,11 +48,9 @@ it from the directory that holds them:
   }
   ```
 
-  For `opencode-go`, `plan` must be `"go"` or `"go-plus"`. Subscription prices are
-  fixed at **$10/month for Go** and **$40/month for Go Plus**, alongside the
-  published token rates and allowances. The object contains only `api_key` and
-  `plan`; the old bare Go key string is not accepted. Direct-provider keys remain
-  strings. Invalid Go configuration stops startup.
+  For `opencode-go`, `plan` must be `"go"` or `"go-plus"`. Direct-provider keys
+  remain strings. The object contains only `api_key` and `plan`; invalid Go
+  configuration stops startup.
 
 - `llm-budget.db` — the SQLite database. It is created on first use and uses WAL
   mode, so SQLite may also create `llm-budget.db-wal` and `llm-budget.db-shm`.
@@ -113,52 +96,21 @@ route the model is in the path instead, and the proxy replaces it there.
 Unqualified `deepseek-flash` and `deepseek-v4-pro` keep their direct DeepSeek
 defaults; other models require qualification. There is no automatic fallback to
 another provider.
-Each concrete provider owns its routing/pricing catalog in `providers/`. Catalog
-baseline checked October 28, 2026; Go catalog checked November 5, 2026:
 
-- **DeepSeek:** both canonical current IDs, `deepseek-flash` (V4.1 Flash) and
-  `deepseek-v4-pro`, on Chat Completions, Messages, and Responses. Retired Flash
-  aliases and old Chat/Reasoner IDs are not separate catalog entries.
-  Sources: [models/pricing](https://api-docs.deepseek.com/quick_start/pricing/),
-  [Responses compatibility](https://api-docs.deepseek.com/guides/responses_api).
-- **OpenCode Go:** 31 [documented models](https://opencode.ai/v2/docs/console/go),
-  with token rates, long-context tiers, and both Go/Go Plus allowances. Every
-  cataloged Go model is permitted through all four proxy routes. Go determines
+Each concrete provider owns its routing and pricing catalog in `providers/`, and
+those headers hold the only copy: `deepseek.hpp`, `openai.hpp`, and `opencode_go.hpp`
+define the model IDs, rates, token tiers, schedules, permitted protocols, and Go
+allowances. This README does not repeat them. The comment above each catalog records
+the published sources and the date the rows were last checked.
+
+Routing behavior that the catalogs do not express:
+
+- Every cataloged Go model is permitted through all four proxy routes. Go determines
   protocol compatibility; upstream rejections are forwarded unchanged, without
   protocol translation. Permitted routing does not guarantee upstream support.
-  `opencode-go/claude-haiku-5-5` uses Messages upstream, with a whole-request
-  price increase above 100,000 input tokens. `beam-free` and
-  `iceman-contributor-free` are temporarily free
-  and unlimited. `gemini-4-argon` is discounted 50% through November 30, 2026; current rates
-  are $2/$10 per million input/output tokens with $30/$120 Go/Go Plus allowances.
-  `kimi-k3.1-pro` costs $2.00/$10.00 per million input/output tokens, with
-  $15/$60 Go/Go Plus allowances. `minimax-m3.1-flash` costs $0.15/$0.60,
-  with $20/$80 allowances; the retired free ID is not accepted.
-  `opencode-go/step-5-preview` is priced at $1.00/$2.70 per million input/output tokens,
-  with a usage allowance of $15 on Go and $60 on Go Plus.
-- **OpenAI:** 36 text/coding models, with endpoint support checked against each
-  [model page](https://developers.openai.com/api/docs/models) and standard rates
-  from [pricing](https://developers.openai.com/api/docs/pricing):
-
-| Family | Model IDs (prefix with `openai/`) |
-| --- | --- |
-| GPT-6 | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna` |
-| GPT-5.6 | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
-| GPT-5.5 / 5.4 | `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4-pro` |
-| GPT-5.2 / 5.1 / 5 | `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-pro` |
-| Codex | `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.1-codex-mini`, `gpt-5-codex` |
-| GPT-4 | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini` |
-| Reasoning | `o3`, `o3-pro`, `o4-mini`, `o3-mini` |
-
-All listed OpenAI models support Responses. Codex, GPT Pro, and `o3-pro` models
-are Responses-only; the others also support Chat Completions. Prefer Responses
-for tools: individual models can restrict Chat Completions features even when
-the endpoint itself is supported. Published long-context prices apply to the
-whole request above 272,000 input tokens where a model defines that tier.
-Models without a published cached-input discount use ordinary input pricing.
-Audio, image generation, embeddings, research/tool-fee models, restricted cyber
-models, dated snapshots, and moving ChatGPT aliases are intentionally excluded:
-this is a useful text/coding catalog, not every OpenAI product.
+- The OpenAI catalog is limited to text and coding models. Audio, image generation,
+  embedding, research/tool-fee, and restricted cyber models, dated snapshots, and
+  moving ChatGPT aliases are intentionally excluded.
 
 Use `http://127.0.0.1:8787` as the SDK base URL for all four formats. Do not append
 `/v1` or `/anthropic`; the SDK supplies the route path. For example:
@@ -197,9 +149,9 @@ curl 'http://127.0.0.1:8787/v1beta/models/opencode-go%2Fgemini-4-argon:generateC
   credentials in URLs are more likely to be recorded by reverse proxies or shell
   history.
 - The body must be JSON. Chat Completions, Messages, and Responses require a
-  `model` string in the body; Gemini takes the model from the path. Unknown models and locally restricted
-  protocol/model combinations get `400`. Go models have no local protocol
-  restrictions; unsupported combinations return Go's upstream error.
+  `model` string in the body; Gemini takes the model from the path. Unknown models
+  and locally restricted protocol/model combinations get `400`. Go models have no
+  local protocol restrictions; unsupported combinations return Go's upstream error.
   Methods other than `POST` get `405`; an unrecognized Gemini path or generate
   method gets `404`.
 - Only configure keys for providers you use. A missing, empty, or non-string
@@ -208,8 +160,8 @@ curl 'http://127.0.0.1:8787/v1beta/models/opencode-go%2Fgemini-4-argon:generateC
   scheduling upstream work or creating a request row. A resolved zero multiplier
   is valid and records zero cost; normal user budget admission still applies.
 - Caller credentials are replaced with the selected provider key from
-  `keys.json`: Bearer authorization for Chat Completions and Responses, `x-api-key` for Messages,
-  and `x-goog-api-key` for Gemini.
+  `keys.json`: Bearer authorization for Chat Completions and Responses, `x-api-key`
+  for Messages, and `x-goog-api-key` for Gemini.
 - Go requests preserve the caller's `User-Agent`, falling back to `llm-budget/1.0`
   when it is absent or empty. `x-opencode-session`, Claude Code's
   `X-Claude-Code-Session-Id`, and Codex's `session-id` and `thread-id` are forwarded
@@ -219,31 +171,30 @@ curl 'http://127.0.0.1:8787/v1beta/models/opencode-go%2Fgemini-4-argon:generateC
   and [Codex's session headers](https://github.com/openai/codex/pull/22193).
 - For direct DeepSeek upstream user isolation, Chat Completions sets `user_id`,
   Responses sets `user`, and Messages sets `metadata.user_id` to the authenticated
-  user's name, overriding caller-supplied
-  values. Other Messages metadata is preserved; missing or null metadata is
-  created, and non-object metadata gets `400`. Names are forwarded unchanged;
-  the CLI does not validate upstream user-ID requirements.
+  user's name, overriding caller-supplied values. Other Messages metadata is
+  preserved; missing or null metadata is created, and non-object metadata gets
+  `400`. Names are forwarded unchanged; the CLI does not validate upstream user-ID
+  requirements.
 - Messages forwards caller `anthropic-version` and `anthropic-beta` headers
   unchanged. When the version header is absent, it defaults to `2023-06-01`.
   The upstream decides whether supplied versions and beta flags are supported.
 - Chat Completions and Responses request standard processing for every provider:
-  the proxy explicitly sets
-  `service_tier` to `"default"` to avoid inheriting project-level Fast defaults.
-  Caller-supplied tiers other than `"default"` (including `"auto"`, Fast/Priority,
-  Ultrafast, and Flex) get `400` before admission or upstream dispatch.
+  the proxy explicitly sets `service_tier` to `"default"` to avoid inheriting
+  project-level Fast defaults. Caller-supplied tiers other than `"default"`
+  (including `"auto"`, Fast/Priority, Ultrafast, and Flex) get `400` before
+  admission or upstream dispatch.
 - All providers permit only client-executed tools: `function` and `custom` tools
   on Chat Completions and Responses; Messages tools with a `name`, `input_schema`,
   and either no `type` or `type: "custom"`; Gemini `functionDeclarations` with a
-  string `name`.
-  Hosted tools, including image generation, web/file search, and hosted execution,
-  get `400` because their additional charges are not accounted for. This also
-  applies to tool definitions in Responses `additional_tools` input items.
-  Chat Completions `web_search_options` and non-empty `mcp_servers` are also
+  string `name`. Hosted tools, including image generation, web/file search, and
+  hosted execution, get `400` because their additional charges are not accounted
+  for. This also applies to tool definitions in Responses `additional_tools` input
+  items. Chat Completions `web_search_options` and non-empty `mcp_servers` are also
   rejected. Gemini `googleSearch`, `codeExecution`, `urlContext`, `googleMaps`,
-  `fileSearch`, and unknown tool fields are rejected for the same reason.
-  Unknown tool types are rejected by default, including on Go and
-  DeepSeek. Ordinary image inputs remain permitted. Rejections happen before
-  budget admission or upstream dispatch.
+  `fileSearch`, and unknown tool fields are rejected for the same reason. Unknown
+  tool types are rejected by default, including on Go and DeepSeek. Ordinary image
+  inputs remain permitted. Rejections happen before budget admission or upstream
+  dispatch.
 - Gemini rejects explicit `cachedContent` references with `400`, because cache
   storage charges are not accounted for. It also permits only `TEXT` in
   `generationConfig.responseModalities`; image and audio output prices are not
@@ -256,7 +207,8 @@ curl 'http://127.0.0.1:8787/v1beta/models/opencode-go%2Fgemini-4-argon:generateC
   `prompt_cache_breakpoint` objects to `ttl: "30m"` for every provider, matching
   the catalog's cache-write rates. It preserves caching modes and other options,
   does not add caching options or breakpoints, and leaves older models'
-  `prompt_cache_retention` unchanged. Caller-requested 12-hour retention is overridden.
+  `prompt_cache_retention` unchanged. Caller-requested 12-hour retention is
+  overridden.
 - Responses rejects `background: true` with `400` for every provider before
   admission or upstream dispatch: later usage cannot be captured by this proxy.
   Omitted or false `background` is permitted; non-boolean values get `400`.
@@ -304,10 +256,9 @@ and displays that user's used percentages and reset times in the browser's
 timezone and locale. The reset column names the timezone; with JavaScript
 disabled, both the heading and timestamps explicitly use UTC. Deploy behind
 HTTPS to protect the key in transit. The key is not put in the URL or the response,
-and the page is marked `no-store`.
-Scheduled resets also show a countdown with JavaScript enabled, updated once per
-minute. **Reset due** indicates that the deadline has passed; **Refresh usage**
-reloads the recorded usage.
+and the page is marked `no-store`. Scheduled resets also show a countdown with
+JavaScript enabled, updated once per minute. **Reset due** indicates that the
+deadline has passed; **Refresh usage** reloads the recorded usage.
 
 The page uses a compact layout with light/dark colors following the browser's
 preference. After a successful lookup, the API key form collapses into **Key
@@ -317,9 +268,9 @@ the accompanying progress bars stop at full.
 
 Page markup, styles, and client behavior live in `web/usage.html`,
 `web/usage.css`, and `web/usage.js`; `usage_page.hpp` handles server rendering and
-form authentication. Assets are ordinary runtime files, cached at startup.
-No CDN, compiler extensions, generated asset headers, or JavaScript build step
-are needed. Asset edits require a server restart, but not a C++ rebuild.
+form authentication. Assets are ordinary runtime files, cached at startup. No CDN,
+compiler extensions, generated asset headers, or JavaScript build step are needed.
+Asset edits require a server restart, but not a C++ rebuild.
 
 With JavaScript enabled, select **Remember on this browser** before submitting
 to save a successfully validated key in this site's `localStorage`. Later visits
@@ -333,8 +284,7 @@ Anyone with access to the browser profile, or scripts running on the same origin
 can access it and use it for API requests. Enable remembering only on a trusted,
 private device. Forgetting does not revoke the key; use `key rotate` to revoke it.
 Without JavaScript or available browser storage, manual key entry still works,
-but remembering is unavailable.
-Other methods return `405` with `Allow: GET, POST`.
+but remembering is unavailable. Other methods return `405` with `Allow: GET, POST`.
 
 ## Manage users
 
@@ -357,10 +307,10 @@ with at most nine decimal places (stored as nanodollars), up to
 unique. `user add` and `key rotate` print the new 64-character hexadecimal API key
 once. Store it securely: the database stores only its SHA-256 hash, and rotating
 immediately invalidates the old key for new authentication.
-`user list` and `user show` print the ID, name, five-hour limit, and weekly limit, but never the
-key. `user usage` prints recorded budget debits in dollars and as a percentage of
-each limit, with active window reset times in the machine's local timezone.
-A missing user is an error.
+`user list` and `user show` print the ID, name, five-hour limit, and weekly limit, but
+never the key. `user usage` prints recorded budget debits in dollars and as a
+percentage of each limit, with active window reset times in the machine's local
+timezone. A missing user is an error.
 
 ## Usage graph
 
@@ -373,61 +323,46 @@ python3 usage_graph.py
 python3 usage_graph.py --db /path/to/llm-budget.db --output spending.svg
 ```
 
-Open the generated `usage.svg` in a browser or image viewer. The script reads the
-database without modifying it and sorts all users by recorded spending in USD,
-including users with zero spending. It covers the 30 days ending at run time,
-or starts at the earliest recorded request if the database has less history.
-The exact interval is shown in UTC; the earliest request is the available
-history marker, not the database creation date.
-
-The chart keeps the per-user totals at the top and adds a daily bar chart for
-each user beneath them, in the same spending order. Daily charts share a USD
-scale for comparison and include zero-spend days. Dates are UTC calendar days;
-the first and last days include only the part inside the exact reporting
-interval, so a 30-day window can touch 31 dates. Hover over a daily bar (or its
-empty column) in a browser to see the exact amount and missing-cost count.
-
-Costs are attributed by request start time, including recorded costs on active
-or interrupted requests. Missing costs are excluded and counted above the chart.
-These are the application's estimates, not provider invoices. An empty database
-produces a chart with no spending. The output contains user names and spending;
-share it accordingly.
+Open the generated `usage.svg` in a browser or image viewer. Chart layout, date
+handling, cost attribution, and the missing-cost rules are documented in the
+header comment of `usage_graph.py`.
 
 The CLI, usage page, and graph aggregate request costs: direct token costs plus
 allocated Go subscription costs. These totals are not actual provider invoices.
 
 ## Cost estimation
 
-`providers.hpp` defines the shared `Model` and `Rates` records, permitted proxy
-protocol flags, and pricing schedules. Model records use local upstream names and named
-fields for rates, optional input-token tiers, and schedules.
-They contain neither registry indexes nor repeated provider prefixes.
+`provider_types.hpp` defines the shared `ProviderDefinition`, `Model`, and `Rates`
+records, the permitted proxy protocol flags, and the pricing schedules. Model
+records use local upstream names and named fields for rates, optional input-token
+tiers, and schedules. They contain neither registry indexes nor repeated provider
+prefixes.
 
-Each concrete provider in `providers/` owns its metadata and static model catalog:
+Each concrete provider in `providers/` owns its metadata and static model catalog.
 `DeepSeekProvider`, `OpenAIProvider`, and `OpenCodeGoProvider` inherit directly
-from the `ConfiguredProvider` interface in `configured_provider.hpp`.
-Credentials and ordinary authentication are shared; configuration and request
-behavior specific to a provider live in its concrete implementation. Only
-`OpenCodeGoProvider` owns Go subscription state and the separate plan allowance table.
+from the `Provider` interface in `provider.hpp`. Credentials and ordinary
+authentication are shared; configuration and request behavior specific to a
+provider live in its concrete implementation. Only `OpenCodeGoProvider` owns Go
+subscription state and the separate plan allowance table.
 
-`provider_config.hpp` constructs the providers and resolves names to a
-provider/model pair. Lookup uses provider names, not positions in a registry or
-an aligned configuration array. Known models remain resolvable when credentials
-are absent. Locally restricted protocols still get `400`; unavailable providers
-get `503`.
+`provider_registry.hpp` builds the provider set with `configure` and resolves names
+with `resolve`. Lookup uses provider names, not positions in a registry or an
+aligned configuration array. Known models remain resolvable when credentials are
+absent. Locally restricted protocols still get `400`; unavailable providers get
+`503`.
 
-Adding a model with an existing pricing scheme requires a named catalog row in
-its provider, not a new pricing function. Go models also need allowances for
-both Go and Go Plus in `providers/opencode_go.hpp`. Go catalog rows use
+Adding a model with an existing pricing scheme requires a named catalog row in its
+provider, not a new pricing function. Go models also need allowances for both Go
+and Go Plus in `providers/opencode_go.hpp`. Go catalog rows use
 `permitted_protocols` to delegate compatibility decisions to Go. Other providers
-use `PROTOCOL_*` flags for permitted routes. Use `SCHEDULE_*` constants for schedules.
+use `PROTOCOL_*` flags for permitted routes. Use `SCHEDULE_*` constants for
+schedules.
 
-`cost.hpp` normalizes API usage and calculates token costs, applying the
-provider's resolved exact multiplier before rounding. It has no subscription
-plan or allowance logic. All routes require a resolved multiplier before
-dispatch. Background accounting reads static model/provider metadata and that
-multiplier value; it does not retain configured-provider objects or make virtual
-calls for streamed usage events.
+`cost.hpp` normalizes API usage and calculates token costs, applying the provider's
+resolved exact multiplier before rounding. It has no subscription plan or allowance
+logic. All routes require a resolved multiplier before dispatch. Accounting reads
+static model/provider metadata and that multiplier value; it does not retain
+configured-provider objects or make virtual calls for streamed usage events.
 
 `input_token_threshold` selects `above_threshold_rates` when the total input
 token count exceeds the threshold, including cache reads and cache writes but
@@ -440,28 +375,21 @@ up once to integer nanodollars (1,000,000,000 = $1).
 
 ### Direct pricing
 
-Direct providers count the calculated token cost without a subscription multiplier.
-Existing DeepSeek off-peak prices per million tokens remain:
-
-| Model | Cache-hit input | Cache-miss input | Output |
-| --- | --- | --- | --- |
-| `deepseek-flash` | $0.003 | $0.15 | $0.60 |
-| `deepseek-v4-pro` | $0.022 | $0.66 | $1.98 |
-
-DeepSeek rates double during 01:00–04:00 and 06:00–10:00 UTC on Beijing-time
-weekdays, excluding Chinese public holidays. Request start time selects pricing.
-Make-up working weekends remain off-peak. Only the 2026 holiday calendar is
-implemented; direct DeepSeek requests in other years cannot be priced.
-The calculator uses the current catalog rates, with no historical rate lookup
-or pricing-start cutoff. OpenAI Mini rows use standard text-token rates, not
-batch, priority, tool, or other extra charges.
+Direct providers count the calculated token cost without a subscription
+multiplier. DeepSeek uses the `SCHEDULE_DEEPSEEK_2026` peak schedule: rates double
+during 01:00–04:00 and 06:00–10:00 UTC on Beijing-time weekdays, excluding Chinese
+public holidays. Request start time selects pricing. Make-up working weekends
+remain off-peak. Only the 2026 holiday calendar is implemented; direct DeepSeek
+requests in other years cannot be priced. The calculator uses the current catalog
+rates, with no historical rate lookup or pricing-start cutoff. OpenAI rows use
+standard text-token rates, not batch, priority, tool, or other extra charges.
 
 ### One shared Go subscription
 
 All proxy users use the operator's one Go key. The `opencode-go` object in
-`keys.json` selects the plan. Its published monthly price is fixed in code:
-$10 for Go or $40 for Go Plus, with no configurable price override.
-The separate `go_allowances` table in `providers/opencode_go.hpp` supplies each model's
+`keys.json` selects the plan. Its published monthly price is fixed in code
+($10 for Go, $40 for Go Plus), with no configurable price override. The separate
+`go_allowances` table in `providers/opencode_go.hpp` supplies each model's
 published monthly allowance for the selected plan. Go Plus allowances are not
 a uniform multiple of Go allowances.
 
@@ -470,71 +398,26 @@ request cost = token cost × published monthly plan price
                ÷ model's monthly included usage allowance
 ```
 
-For Go DeepSeek V4 Flash, $0.30 of nominal usage against its $30 monthly allowance
-allocates $0.10 of the $10 subscription to the user. The same $0.30 of usage
-through direct DeepSeek counts as $0.30. Free Go models cost zero.
-Go DeepSeek rows use Go's documented UTC-weekday peak schedule, independently
-of direct DeepSeek's Chinese holiday calendar. Other rows use flat or
-context-tiered prices from [Go's published plan tables](https://opencode.ai/v2/docs/console/go).
+For example, $0.30 of nominal usage against a $30 monthly allowance allocates
+$0.10 of the $10 subscription to the user. The same $0.30 of usage through direct
+DeepSeek counts as $0.30. Free Go models cost zero. Go DeepSeek rows use Go's
+documented UTC-weekday peak schedule, independently of direct DeepSeek's Chinese
+holiday calendar. Other rows use flat or context-tiered prices from
+[Go's published plan tables](https://opencode.ai/v2/docs/console/go).
 
 This is a stable operator allocation policy, not an additional invoice charge
 or an exact replica of Go's mixed-model allowance enforcement. Unused allowance
 leaves some subscription expense unallocated. Do not add these allocated costs
 to the subscription purchase when computing actual cash expenses.
 Disable Go's **Use balance** setting for this policy: automatic paid Zen fallback
-is not distinguished in usage reports and would invalidate subscription-only accounting.
-Changing the configured plan requires a restart and affects new requests only;
-previously stored request costs are not recalculated.
+is not distinguished in usage reports and would invalidate subscription-only
+accounting. Changing the configured plan requires a restart and affects new
+requests only; previously stored request costs are not recalculated.
 
 ### Usage accounting
 
-- Chat Completions supports DeepSeek's explicit cache-read and cache-miss counts
-  and OpenAI's nested `prompt_tokens_details.cached_tokens`. An explicit hit count
-  wins over the nested cached count; otherwise the nested count is used. Uncached
-  input derives from the inclusive `prompt_tokens` total when it is present, and
-  from the reported miss count otherwise. Reasoning tokens are already included in output.
-  Nested `prompt_tokens_details.cache_write_tokens` counts are charged at the
-  model's cache-write rate, replacing ordinary input pricing for those tokens.
-- Messages input, cache reads, and cache writes are priced separately. Streaming
-  combines initial `message_start.message.usage` with later `message_delta.usage`;
-  supplied fields replace earlier counts, omitted fields remain, and cumulative
-  counts are never added together.
-- Responses uses `input_tokens`, `input_tokens_details.cached_tokens`,
-  `input_tokens_details.cache_write_tokens`, and `output_tokens`. Reads and writes
-  are subsets of total input: writes use their own rate, not an additive charge.
-  Reasoning tokens are already included in output and are not added again. JSON uses top-level
-  `usage`; SSE reads `response.usage` from `response.completed`,
-  `response.incomplete`, and `response.failed`, including unnamed SSE events with
-  a JSON `type`. Initial null usage and output-item events do not overwrite the
-  request estimate. See [Responses streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events).
-  See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
-  for cache-write accounting on GPT-5.6 and later models. Malformed optional
-  details are ignored. Cache reads are set to zero only when they exceed the input
-  total, and cache writes are limited to the uncached remainder; valid input and
-  output counts remain billable.
-- Gemini reads `promptTokenCount` (the inclusive prompt total), the cached subset
-  `cachedContentTokenCount`, `toolUsePromptTokenCount`, `candidatesTokenCount`, and
-  `thoughtsTokenCount`. Tool-use prompt tokens are added to input, and thoughts are
-  added to output alongside candidates. There is no cache-write counter, so cache
-  writes are not charged. Cumulative `usageMetadata` objects in SSE events and
-  JSON array elements replace the estimate as they grow.
-- `cost::calculate()` returns one request cost. The proxy passes it to the existing
-  `database::update_request()` function, which stores it in `cost_nanodollars`.
-  The database schema and stored costs are unchanged; no migration or additional
-  accounting columns are required.
-- Usage parsers ignore malformed counters independently instead of rejecting an
-  entire usage object. Invalid input does not discard valid output, or vice versa;
-  Messages' disjoint cache/input counters are likewise independent. An optional
-  warning identifies the first ignored defect. Warnings identify the user, request ID, provider, model,
-  and protocol, followed by `field`, `reason`, and the complete
-  JSON `usage` value. Unknown fields, nested details, nulls, and malformed values
-  are retained without filtering or type-only substitutions. Request headers,
-  prompts, and response content outside `usage` are not included.
-  Missing usage fields default to zero. Optional Chat Completions/Responses
-  `cache_write_tokens: null` likewise means no reported cache-write count; cached
-  reads are still accounted for. Other null counters and malformed values are
-  ignored. Incomplete reports can underestimate costs, and unknown
-  costs do not contribute to budget totals.
+Per-provider usage parsing is documented in
+[`docs/accounting.md`](docs/accounting.md).
 
 ## Known limitations
 
@@ -542,10 +425,6 @@ previously stored request costs are not recalculated.
   `error`/`message_stop` and Responses terminal event types do not determine the
   stored state. A failed model response or a stream that closes before its
   terminal event can be marked completed if the HTTP fetch succeeds.
-- Background Responses are blocked for every provider because later polling is
-  not proxied or accounted for. Nonstandard Chat/Responses service tiers are blocked
-  for every provider. Direct OpenAI also blocks hosted tools; other providers still
-  use their cataloged token rates without additional tool fees.
 - Proxy-generated errors are plain text, not provider-native JSON error objects.
 - Missing usage or an unavailable pricing schedule can leave a dispatched request
   without a recorded cost. The multiplier admission check does not eliminate these
@@ -579,8 +458,8 @@ The `--tools-only` option checks hosted-tool rejection before admission and
 client-tool forwarding across all providers and supported protocols, with JSON
 and SSE responses, without running the pricing/accounting scenarios.
 
-`proxy_limits.py` exercises the three body-model proxy routes against the real local server,
-checking exhausted five-hour, weekly, and combined budgets, reset-based
+`proxy_limits.py` exercises the three body-model proxy routes against the real local
+server, checking exhausted five-hour, weekly, and combined budgets, reset-based
 `Retry-After`, and disabled (`403`) budgets without contacting the upstream.
 
 `usage_graph.py` checks UTC calendar-day grouping, the rolling cutoff, future-row

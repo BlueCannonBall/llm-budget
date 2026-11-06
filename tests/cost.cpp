@@ -16,7 +16,7 @@ static providers::ProviderSet make_configuration(std::string_view plan = "go") {
 
 static const auto configuration = make_configuration();
 
-static std::optional<std::uint64_t> calculate_cost(std::string_view service, std::string_view model,
+static std::optional<uint64_t> calculate_cost(std::string_view service, std::string_view model,
     const cost::TokenUsage& usage, std::chrono::system_clock::time_point time,
     const providers::ProviderSet& configured = configuration) {
     const auto* provider = providers::find_provider(configured, service);
@@ -32,7 +32,7 @@ static std::optional<std::uint64_t> calculate_cost(std::string_view service, std
 }
 
 static void check_usage(const cost::TokenUsage& usage,
-    std::uint64_t hits, std::uint64_t misses, std::uint64_t output, std::uint64_t creation = 0) {
+    uint64_t hits, uint64_t misses, uint64_t output, uint64_t creation = 0) {
     assert(usage.cache_hit_tokens == hits);
     assert(usage.cache_miss_tokens == misses);
     assert(usage.output_tokens == output);
@@ -41,7 +41,7 @@ static void check_usage(const cost::TokenUsage& usage,
 
 static void check_cost(std::string_view service, std::string_view model,
     const cost::TokenUsage& usage, std::chrono::system_clock::time_point time,
-    std::uint64_t expected, const providers::ProviderSet& configured = configuration) {
+    uint64_t expected, const providers::ProviderSet& configured = configuration) {
     auto amount = calculate_cost(service, model, usage, time, configured);
     assert(amount && *amount == expected);
 }
@@ -53,7 +53,7 @@ int main() {
     auto peak = sys_days {2026y / September / 28} + 1h; // Monday 01:00 UTC
 
     auto amount = calculate_cost("deepseek", "deepseek-flash", usage, off_peak);
-    static_assert(std::is_same_v<decltype(amount), std::optional<std::uint64_t>>);
+    static_assert(std::is_same_v<decltype(amount), std::optional<uint64_t>>);
     assert(amount && *amount == 14250);
     amount = calculate_cost("deepseek", "deepseek-flash", usage, peak);
     assert(amount && *amount == 28500);
@@ -77,7 +77,7 @@ int main() {
     assert(!calculate_cost("deepseek", "deepseek-v4-pro", usage, peak));
 
     // Check individual products, accumulation, and the peak-price multiplier.
-    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    const auto maximum = std::numeric_limits<uint64_t>::max();
     assert(!calculate_cost("deepseek", "deepseek-flash", {maximum, 0, 0, 0}, off_peak));
     assert(!calculate_cost("deepseek", "deepseek-flash", {0, maximum, 0, 0}, off_peak));
     assert(!calculate_cost("deepseek", "deepseek-flash", {0, 0, maximum, 0}, off_peak));

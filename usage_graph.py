@@ -1,4 +1,27 @@
-"""Generate an SVG of total and daily per-user spending using Python's standard library."""
+"""Generate an SVG of total and daily per-user spending using Python's standard library.
+
+Usage:
+    python3 usage_graph.py [--db PATH] [--output PATH]
+
+The script reads the database without modifying it and sorts all users by
+recorded spending in USD, including users with zero spending. It covers the 30
+days ending at run time, or starts at the earliest recorded request if the
+database has less history. The exact interval is shown in UTC; the earliest
+request is the available history marker, not the database creation date.
+
+The chart keeps the per-user totals at the top and adds a daily bar chart for
+each user beneath them, in the same spending order. Daily charts share a USD
+scale for comparison and include zero-spend days. Dates are UTC calendar days;
+the first and last days include only the part inside the exact reporting
+interval, so a 30-day window can touch 31 dates. Hover over a daily bar (or its
+empty column) in a browser to see the exact amount and missing-cost count.
+
+Costs are attributed by request start time, including recorded costs on active
+or interrupted requests. Missing costs are excluded and counted above the chart.
+These are the application's estimates, not provider invoices. An empty database
+produces a chart with no spending. The output contains user names and spending;
+share it accordingly.
+"""
 
 import argparse
 from datetime import datetime, timezone
