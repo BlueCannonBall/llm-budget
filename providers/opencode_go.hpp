@@ -16,7 +16,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked November 5, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked November 8, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES | PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE;
@@ -78,6 +78,12 @@ namespace providers {
 
             {
                 .name = "beam-free",
+                .protocols = permitted_protocols,
+                .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
+            },
+
+            {
+                .name = "crouton-alpha-free",
                 .protocols = permitted_protocols,
                 .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
             },
@@ -247,6 +253,7 @@ namespace providers {
             {.model = "longcat-2.0", .go_monthly_usd = 60, .go_plus_monthly_usd = 240},
             {.model = "step-5-preview", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "beam-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
+            {.model = "crouton-alpha-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "minimax-m3.1-flash", .go_monthly_usd = 20, .go_plus_monthly_usd = 80},
             {.model = "mimo-v2.6-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "mimo-v2.6-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
