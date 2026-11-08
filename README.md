@@ -491,3 +491,7 @@ test_dir=$(mktemp -d)
 (cd "$test_dir" && "$database_test")
 rm -r "$test_dir"
 ```
+
+## License
+
+GNU Affero General Public License, version 3. See [`LICENSE`](LICENSE).

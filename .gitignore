@@ -1,6 +1,7 @@
 obj/
 llm-budget
 compile_commands.json
+.opencode/
 *.d
 *.db
 *.db*
