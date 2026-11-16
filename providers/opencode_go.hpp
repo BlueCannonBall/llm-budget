@@ -16,7 +16,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked November 10, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked November 16, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES | PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE;
@@ -72,6 +72,12 @@ namespace providers {
 
             {
                 .name = "longcat-2.5-free",
+                .protocols = permitted_protocols,
+                .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
+            },
+
+            {
+                .name = "hy4-flash-free",
                 .protocols = permitted_protocols,
                 .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
             },
@@ -142,6 +148,12 @@ namespace providers {
                 .name = "qwen3.8-max",
                 .protocols = permitted_protocols,
                 .rates = {.input = 2'000'000, .cached_read = 250'000, .output = 6'000'000, .cached_write = 2'500'000},
+            },
+
+            {
+                .name = "qwen4-max",
+                .protocols = permitted_protocols,
+                .rates = {.input = 1'500'000, .cached_read = 75'000, .output = 4'500'000, .cached_write = 1'875'000},
             },
 
             {
@@ -254,6 +266,7 @@ namespace providers {
             {.model = "step-5-preview", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "beam-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "longcat-2.5-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
+            {.model = "hy4-flash-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "minimax-m3.1-flash", .go_monthly_usd = 20, .go_plus_monthly_usd = 80},
             {.model = "mimo-v2.6-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "mimo-v2.6-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
@@ -263,6 +276,7 @@ namespace providers {
             {.model = "muse-spark-1.3-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "muse-spark-1.2-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "qwen3.8-max", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
+            {.model = "qwen4-max", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "qwen3.8-flash", .go_monthly_usd = 30, .go_plus_monthly_usd = 90},
             {.model = "qwen3.7-plus", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "deepseek-v4.1-flash", .go_monthly_usd = 100, .go_plus_monthly_usd = 200},
