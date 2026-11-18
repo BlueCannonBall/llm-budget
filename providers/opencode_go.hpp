@@ -16,7 +16,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked November 16, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked November 18, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES | PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE;
@@ -108,18 +108,6 @@ namespace providers {
 
             {
                 .name = "mimo-v2.6-pro",
-                .protocols = permitted_protocols,
-                .rates = {.input = 435'000, .cached_read = 3'625, .output = 870'000, .cached_write = 435'000},
-            },
-
-            {
-                .name = "mimo-v2.5",
-                .protocols = permitted_protocols,
-                .rates = {.input = 140'000, .cached_read = 2'800, .output = 280'000, .cached_write = 140'000},
-            },
-
-            {
-                .name = "mimo-v2.5-pro",
                 .protocols = permitted_protocols,
                 .rates = {.input = 435'000, .cached_read = 3'625, .output = 870'000, .cached_write = 435'000},
             },
@@ -257,7 +245,7 @@ namespace providers {
         inline static constexpr GoAllowance go_allowances[] {
             {.model = "iceman-contributor-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "glm-5.3-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
-            {.model = "glm-5.3", .go_monthly_usd = 15, .go_plus_monthly_usd = 120},
+            {.model = "glm-5.3", .go_monthly_usd = 500, .go_plus_monthly_usd = 1000},
             {.model = "glm-5.2", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "kimi-k3.1-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "kimi-k3", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
@@ -270,8 +258,6 @@ namespace providers {
             {.model = "minimax-m3.1-flash", .go_monthly_usd = 20, .go_plus_monthly_usd = 80},
             {.model = "mimo-v2.6-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "mimo-v2.6-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
-            {.model = "mimo-v2.5", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
-            {.model = "mimo-v2.5-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
             {.model = "minimax-m3", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "muse-spark-1.3-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
             {.model = "muse-spark-1.2-contributor", .go_monthly_usd = 60, .go_plus_monthly_usd = 120},
