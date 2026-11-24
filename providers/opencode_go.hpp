@@ -16,7 +16,7 @@ namespace providers {
         };
 
         // Rates and thresholds: https://opencode.ai/v2/docs/console/go
-        // Checked November 23, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
+        // Checked November 24, 2026. K means 1,000. A '-' cache-write rate uses input pricing.
         // Permit all proxy protocols; Go decides which combinations it supports.
         inline static constexpr unsigned int permitted_protocols =
             PROTOCOL_CHAT_COMPLETIONS | PROTOCOL_ANTHROPIC_MESSAGES | PROTOCOL_RESPONSES | PROTOCOL_GOOGLE_GENERATIVE_LANGUAGE;
@@ -24,6 +24,12 @@ namespace providers {
         inline static constexpr Model model_catalog[] {
             {
                 .name = "iceman-contributor-free",
+                .protocols = permitted_protocols,
+                .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
+            },
+
+            {
+                .name = "hungerg-free",
                 .protocols = permitted_protocols,
                 .rates = {.input = 0, .cached_read = 0, .output = 0, .cached_write = 0},
             },
@@ -232,6 +238,7 @@ namespace providers {
         // Both columns: https://opencode.ai/v2/docs/console/go
         inline static constexpr GoAllowance go_allowances[] {
             {.model = "iceman-contributor-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
+            {.model = "hungerg-free", .go_monthly_usd = 0, .go_plus_monthly_usd = 0},
             {.model = "glm-5.3-flash", .go_monthly_usd = 60, .go_plus_monthly_usd = 180},
             {.model = "glm-5.3", .go_monthly_usd = 200, .go_plus_monthly_usd = 400},
             {.model = "kimi-k3.1-pro", .go_monthly_usd = 15, .go_plus_monthly_usd = 60},
